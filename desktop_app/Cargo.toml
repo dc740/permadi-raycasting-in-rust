@@ -1,0 +1,13 @@
+[package]
+name = "desktop_app"
+version = "0.1.0"
+authors = ["Emilio Moretti <emilio.moretti@gmail.com>"]
+edition = "2018"
+
+[features]
+default = [ "main_app/desktop" ]
+
+[dependencies]
+async-std = "1.9.0"
+minifb = { git = 'https://github.com/emoon/rust_minifb.git', branch = 'master', default-features = false }
+main_app = { path = "../main_app", default-features = false }

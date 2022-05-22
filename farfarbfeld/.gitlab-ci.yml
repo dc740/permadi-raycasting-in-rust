@@ -1,0 +1,40 @@
+image: "scorpil/rust:stable"
+
+stages:
+  - test
+  - doc
+  - deploy
+
+# Use cargo to test the project
+test:stable:
+  stage: test
+  script:
+    - rustc --version && cargo --version # Print version info for debugging
+    - cargo test --verbose
+
+test:beta:
+  image: "scorpil/rust:beta"
+  stage: test
+  script:
+    - rustc --version && cargo --version # Print version info for debugging
+    - cargo test --verbose
+
+test:nightly:
+  image: "scorpil/rust:nightly"
+  stage: test
+  allow_failure: true
+  script:
+    - rustc --version && cargo --version # Print version info for debugging
+    - cargo test --verbose
+
+pages:
+  stage: doc
+  script:
+    - cargo doc
+    - mv target/doc public
+    - cp .ci/index.html public/index.html
+  artifacts:
+    paths:
+      - public
+  only:
+    - master
