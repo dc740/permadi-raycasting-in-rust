@@ -1,0 +1,38 @@
+[package]
+name = "main_app"
+version = "0.1.0"
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = [ "web" ]
+web = [ "instant/wasm-bindgen", "minifb/web" ]
+desktop = [ "minifb/default" ]
+
+[dependencies]
+console_error_panic_hook = "0.1.6"
+wasm-bindgen = "0.2.74"
+web-sys = "0.3.51"
+instant = "0.1.9"
+minifb = { git = 'https://github.com/emoon/rust_minifb.git', branch = 'master', default-features = false }
+farfarbfeld = { path = '../farfarbfeld' }
+js-sys = "0.3.51"
+wasm-rs-shared-channel = "0.1.0"
+wasm-bindgen-futures = "0.4.24"
+
+# set wasm-opt to false and run wasm-opt manually to workaround this bug on some architectures
+# https://github.com/rustwasm/wasm-pack/issues/974
+[package.metadata.wasm-pack.profile.dev]
+#wasm-opt = false
+wasm-opt = ["-O4", "-all" ]
+
+[package.metadata.wasm-pack.profile.profiling]
+#wasm-opt = false
+wasm-opt = ["-O4", "-all" ]
+
+[package.metadata.wasm-pack.profile.release]
+#wasm-opt = false
+wasm-opt = ["-O4", "-all" ]

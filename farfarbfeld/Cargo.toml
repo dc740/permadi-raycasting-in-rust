@@ -1,0 +1,10 @@
+[package]
+authors = ["Emilio Moretti <emilio.moretti@gmail.com>", "Juggle-Tux <juggle-tux@users.noreply.github.com>"]
+description = "A simple encoding format from suckless. Refactored to Rust 2021."
+documentation = "-"
+homepage = "-"
+license = "AGPL v3"
+name = "farfarbfeld"
+repository = "-"
+version = "0.0.1"
+edition = "2021"
