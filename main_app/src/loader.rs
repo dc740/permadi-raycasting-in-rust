@@ -46,6 +46,8 @@ impl Assets {
         self.load_texture("/images/floortile.ff");
         self.load_texture("/images/tile41.ff");
         self.load_texture("/images/bgr.ff");
+        self.load_texture("/images/brick2.ff");
+        self.load_texture("/images/arma_32.ff");
     }
     #[cfg(feature = "web")]
     pub fn load_some_textures(&mut self, worker: Rc<RefCell<web_sys::Worker>>) {
@@ -54,6 +56,8 @@ impl Assets {
         download_raw_bin(worker.clone(), "/images/floortile.ff");
         download_raw_bin(worker.clone(), "/images/tile41.ff");
         download_raw_bin(worker.clone(), "/images/bgr.ff");
+        download_raw_bin(worker.clone(), "/images/brick2.ff");
+        download_raw_bin(worker.clone(), "/images/arma_32.ff");
     }
 
     #[cfg(not(feature = "web"))]

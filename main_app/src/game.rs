@@ -1,6 +1,7 @@
 use crate::loader::Assets;
 use minifb::{Key, Window};
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeSet, HashMap};
 use std::f64::consts::PI;
 /**********************************************
 Raycasting implementation in Rust.
@@ -80,6 +81,51 @@ pub fn clamp_u32_to_u8(value: u32) -> u8 {
     x as u8
 }
 
+#[inline]
+pub fn tile_id(x: u32, y: u32) -> u32 {
+    y << 16 | x //yes, a large value (>2^16) would cause invalid results
+}
+
+#[derive(Clone)]
+pub struct Drawable {
+    x: f32,
+    y: f32,
+    width: u8,
+    height: u8,
+    texture: String,
+    distance: f32,
+    angle: f32,
+}
+
+//implement ordering for drawing from farther to closer textures
+// Notice this is an ugly hack to use BTreeSet on a temporary array
+impl Ord for Drawable {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.distance
+            .partial_cmp(&other.distance)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    }
+}
+
+impl PartialOrd for Drawable {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Drawable {
+    fn eq(&self, other: &Self) -> bool {
+        self.texture == other.texture
+            && self.x == other.x
+            && self.y == other.y
+            && self.width == other.width
+            && self.height == other.height
+    }
+}
+
+// yes, we have an f32 element, but it can be ignored
+impl Eq for Drawable {}
+
 pub struct GameWindow {
     width: u32,
     height: u32,
@@ -105,6 +151,7 @@ pub struct GameWindow {
     angle90: u32,
     angle180: u32,
     angle270: u32,
+    //angle330: u32,
     angle360: u32,
     angle0: u32,
     angle5: u32,
@@ -130,6 +177,8 @@ pub struct GameWindow {
     f_player_distance_to_the_projection_plane: f32,
     f_player_height: i32,
     f_player_speed: u32,
+    f_player_to_wall_dist: Vec<f32>,
+    drawable_objects: Vec<Drawable>,
 
     // Half of the screen height
     f_projection_plane_ycenter: i32,
@@ -168,13 +217,14 @@ impl GameWindow {
         let projectionplanewidth = 320;
         let projectionplaneheight = 200;
         let angle60 = projectionplanewidth;
-        // You must make sure these values are integers because we're using loopup tables.
+        // You must make sure these values are integers because we're using lookup tables.
         let angle30 = angle60 / 2;
         //let angle15 = angle30 / 2;
         let angle90 = angle30 * 3;
         let angle180 = angle90 * 2;
         let angle270 = angle90 * 3;
         let angle360 = angle60 * 6;
+        //let angle330 = angle360 - angle30;
         let angle0 = 0;
         let angle5 = angle30 / 6;
         //let angle3 = angle30 / 10;
@@ -209,6 +259,7 @@ impl GameWindow {
             angle90,
             angle180,
             angle270,
+            //angle330,
             angle360,
             angle0,
             angle5,
@@ -234,6 +285,16 @@ impl GameWindow {
             f_player_distance_to_the_projection_plane: 277.0,
             f_player_height: 32,
             f_player_speed: 16,
+            f_player_to_wall_dist: vec![f32::MAX; projectionplanewidth as usize + 1],
+            drawable_objects: vec![Drawable {
+                x: 120.0,
+                y: 120.0,
+                width: 32,
+                height: 32,
+                texture: "/images/arma_32.ff".to_string(),
+                distance: f32::MAX,
+                angle: 0.0,
+            }],
 
             // Half of the screen height
             f_projection_plane_ycenter: projectionplaneheight as i32 / 2,
@@ -273,6 +334,8 @@ impl GameWindow {
 
     //*******************************************************************//
     //* Convert arc (degree) to radian
+    // This is NOT actual degrees. All degrees in the wall drawing logic
+    // represent ratios to the projection plane (320 pixels)
     //*******************************************************************//
     fn arc_to_rad(&self, arc_angle: f32) -> f32 {
         return (arc_angle * PI as f32) / self.angle180 as f32;
@@ -394,13 +457,14 @@ impl GameWindow {
         height: f32,
         x_offset_param: f32,
         brightness_level: f32,
+        texture_name: String,
     ) {
         // wait until the texture loads
-        if !self.assets.textures.contains_key("/images/tile2.ff") {
+        if !self.assets.textures.contains_key(&texture_name) {
             return;
         }
         let f_wall_texture_buffer;
-        match self.assets.textures.get("/images/tile2.ff") {
+        match self.assets.textures.get(&texture_name) {
             None => panic!("Wall not loaded. Dunno what to do"),
             Some(wall_texture) => f_wall_texture_buffer = wall_texture,
         }
@@ -413,7 +477,8 @@ impl GameWindow {
         let mut source_index = bytes_per_pixel * x_offset as u32;
 
         let last_source_index =
-            f_wall_texture_buffer.width * f_wall_texture_buffer.height * bytes_per_pixel - 4;
+            f_wall_texture_buffer.width * f_wall_texture_buffer.height * bytes_per_pixel
+                - bytes_per_pixel;
 
         //let targetCanvasPixels=self.canvasContext.createImageData(0, 0, width, height);
         let mut target_index: i32 = ((self.width * 1) as f32 * y + (1 as f32 * x)) as i32;
@@ -428,7 +493,7 @@ impl GameWindow {
 
         // we need to check this, otherwise, program might crash when trying
         // to fetch the shade if this condition is true (possible if height is 0)
-        if height_to_draw < 0.0 {
+        if height_to_draw < 0.0 || height_to_draw.is_nan() {
             return;
         }
 
@@ -463,7 +528,7 @@ impl GameWindow {
             let alpha = clamp_u16_to_u8(f_wall_texture_pixels[source_index as usize + 3]); //.floor();
 
             // while there's a row to draw & not end of drawing area
-            while y_error >= f_wall_texture_buffer.width as f32 {
+            while y_error >= f_wall_texture_buffer.width as f32 && !y_error.is_nan() {
                 y_error -= f_wall_texture_buffer.width as f32;
                 if (target_index as usize) < canvas_len {
                     self.canvas[target_index as usize] = u8_to_color(
@@ -477,7 +542,7 @@ impl GameWindow {
 
                 // clip bottom (just return if we reach bottom)
                 height_to_draw -= 1.0;
-                if height_to_draw < 1.0 {
+                if height_to_draw < 1.0 || height_to_draw.is_nan() {
                     return;
                 }
             }
@@ -546,6 +611,10 @@ impl GameWindow {
             self.f_itan_table[i] = 1.0 / self.f_tan_table[i];
 
             // Next we crate a table to speed up wall lookups.
+            //
+            // These tables let you find the X intersection on a tile,
+            // then using the step we can find the next X intersection on the next tile
+            // by taking the current x and adding the step value.
             //
             //  You can see that the distance between walls are the same
             //  if we know the angle
@@ -761,10 +830,26 @@ impl GameWindow {
     //* Renderer
     //*******************************************************************//
     fn raycast(&mut self) {
-        let mut vertical_grid; // horizotal or vertical coordinate of intersection
-        let mut horizontal_grid: f32; // theoritically, this will be multiple of TILE_SIZE
-                                      // , but some trick did here might cause
-                                      // the values off by 1
+        // NOTE: (0,0) is top left. Comments about orientation are based on that.
+        // So notice that when it says down, it means 0 < angle < 180 because
+        // when we look at the drawing the ray is facing down. It's just
+        // because the drawing looks like that. If 0,0 would at the be bottom
+        // then it would say itś looking up, but it'd still refer to the first
+        // and second quadrants (0 to 180)
+
+        // This horizontal grid is the Y coordinate of the ray intersection
+        // with the wall in a point A.
+        // So, it's the wall above or below the player (the horizontal walls).
+        // if it's facing down it will be bigger than the player_y position,
+        // if it's facing up it will be smaller.
+        // theoritically, this will be multiple of TILE_SIZE, but some trick done
+        // here might cause the values off by 1
+        let mut horizontal_grid: f32;
+        // contrary to the horizontal grid variable, the vertical
+        // grid value will hold the X value of the intersection which is left or right
+        // (hence, the vertical name)
+        // TODO: I think this naming is confusing and could be changed to something better
+        let mut vertical_grid: f32;
         let mut dist_to_next_vertical_grid: f32; // how far to the next bound (this is multiple of
         let mut dist_to_next_horizontal_grid: f32; // tile size)
         let mut x_intersection: f32; // x and y intersections
@@ -796,8 +881,9 @@ impl GameWindow {
         }
 
         for cast_column in 0..self.projectionplanewidth {
-            // Ray is between 0 to 180 degree (1st and 2nd quadrant).
-
+            // SEARCH FOR THE FIRST INTERSECTION OF THE CAST COLUMN AND A POSSIBLE WALL
+            // We only need to search for the first tile borders. We will look for walls later.
+            // We check which side the ray is pointing first
             // Ray is facing down
             if cast_arc > self.angle0 as i32 && cast_arc < self.angle180 as i32 {
                 // truncuate then add to get the coordinate of the FIRST grid (horizontal
@@ -806,17 +892,23 @@ impl GameWindow {
                 horizontal_grid = (self.f_player_y as f32 / self.tile_size as f32).floor()
                     * self.tile_size as f32
                     + self.tile_size as f32;
-
                 // compute distance to the next horizontal wall
                 dist_to_next_horizontal_grid = self.tile_size as f32;
 
+                // now we get the distances (offsets) from the player to the horizontal wall.
+                // if the intersection of the ray with the wall is at point A then:
+                // (remember A.y == horizontal_grid)
+                // y_offset = A.y - self.player_y
+                // If we draw this whole scenario on paper we can see:
+                // tan(cast_arc)=y_offset/x_offset
+                // And with that formular we can play like this:
+                // itan(cast_arc)=1/tan=x_offset/y_offset
+                // x_offset = itan * y_offset
+
+                // This x_offset plus the x point where the player stands
+                // gives use the A.x coordinate of intersection.
                 let xtemp = self.f_itan_table[cast_arc as usize]
                     * (horizontal_grid - self.f_player_y as f32) as f32;
-                // we can get the vertical distance to that wall by
-                // (horizontalGrid-playerY)
-                // we can get the horizontal distance to that wall by
-                // 1/tan(arc)*verticalDistance
-                // find the x interception to that wall
                 x_intersection = xtemp + self.f_player_x as f32;
             }
             // Else, the ray is facing up
@@ -831,7 +923,11 @@ impl GameWindow {
 
                 horizontal_grid -= 1.0;
             }
-            // LOOK FOR HORIZONTAL WALL
+            // NOW WE START LOOKING FOR WALLS
+            // We have the coordinates of the FIRST GRID intersection with the ray
+            // so we can start looking for walls
+
+            // LOOK FOR HORIZONTAL WALL (walls in the X axis)
 
             // If ray is directly facing right or left, then ignore it
             if cast_arc == self.angle0 as i32 || cast_arc == self.angle180 as i32 {
@@ -839,6 +935,9 @@ impl GameWindow {
             }
             // else, move the ray until it hits a horizontal wall
             else {
+                // The step to the next x intersection is always the same for a given angle
+                // so this is optimized so we only calculate it at the beginning.
+                // The same happens with y intersections a few lines below
                 dist_to_next_xintersection = self.f_xstep_table[cast_arc as usize];
                 loop {
                     x_grid_index = (x_intersection / self.tile_size as f32).floor() as i32;
@@ -868,9 +967,11 @@ impl GameWindow {
                     }
                 }
             }
-
             // FOLLOW X RAY
+            // Ray facing right
             if cast_arc < self.angle90 as i32 || cast_arc > self.angle270 as i32 {
+                // the vertical grid will be left or right of the player
+                // vertical_grid will be the X value of the intersection
                 vertical_grid = self.tile_size as f32
                     + (self.f_player_x as f32 / self.tile_size as f32).floor()
                         * self.tile_size as f32;
@@ -879,8 +980,9 @@ impl GameWindow {
                 let ytemp = self.f_tan_table[cast_arc as usize]
                     * (vertical_grid - self.f_player_x as f32) as f32;
                 y_intersection = ytemp + self.f_player_y as f32;
+                // now we have the x and y intersection with a vertical grid
             }
-            // RAY FACING LEFT
+            // ray facing left
             else {
                 vertical_grid = (self.f_player_x as f32 / self.tile_size as f32).floor()
                     * self.tile_size as f32;
@@ -892,7 +994,8 @@ impl GameWindow {
 
                 vertical_grid -= 1.0;
             }
-            // LOOK FOR VERTICAL WALL
+
+            // LOOK FOR VERTICAL WALL (Y axis)
             if cast_arc == self.angle90 as i32 || cast_arc == self.angle270 as i32 {
                 dist_to_vertical_grid_being_hit = f32::MAX;
             } else {
@@ -933,22 +1036,23 @@ impl GameWindow {
                                      // if yray distance to the wall is closer, the yDistance will be shorter than
                                      // the xDistance
             let mut is_vertical_hit = false;
-            //let mut distorted_distance = 0.0;
 
             if dist_to_horizontal_grid_being_hit < dist_to_vertical_grid_being_hit {
                 // the next function call (drawRayOnMap()) is not a part of raycating rendering part,
                 // it just draws the ray on the overhead map to illustrate the raycasting process
                 self.draw_ray_on_overhead_map(x_intersection, horizontal_grid, 0, 255, 0, 255);
                 dist = dist_to_horizontal_grid_being_hit / self.f_fish_table[cast_column as usize];
-                //				dist_y /= convert_to_float(GLfishTable[GLcastColumn]);
-                //distorted_distance = dist;
                 let ratio = self.f_player_distance_to_the_projection_plane as f32 / dist;
                 bottom_of_wall =
                     ratio * self.f_player_height as f32 + self.f_projection_plane_ycenter as f32;
-                let scale: f32 = self.f_player_distance_to_the_projection_plane as f32
-                    * self.wall_height as f32
+
+                //                         
+                // Projected Slice Height=(Actual Slice Height/Distance to the Slice) * Distance to Projection Plane
+                //                         
+                let real_height: f32 = self.f_player_distance_to_the_projection_plane as f32 //277
+                    * self.wall_height as f32  //64
                     / dist;
-                top_of_wall = bottom_of_wall - scale;
+                top_of_wall = bottom_of_wall - real_height;
                 x_offset = x_intersection % self.tile_size as f32;
             }
             // else, we use xray instead (meaning the vertical wall is closer than
@@ -966,12 +1070,13 @@ impl GameWindow {
                 let ratio = self.f_player_distance_to_the_projection_plane as f32 / dist;
                 bottom_of_wall =
                     ratio * self.f_player_height as f32 + self.f_projection_plane_ycenter as f32;
-                let scale: f32 = self.f_player_distance_to_the_projection_plane as f32
+                let real_height: f32 = self.f_player_distance_to_the_projection_plane as f32
                     * self.wall_height as f32
                     / dist;
-                top_of_wall = bottom_of_wall - scale;
+                top_of_wall = bottom_of_wall - real_height;
             }
 
+            self.f_player_to_wall_dist[cast_column as usize] = dist;
             // Add simple shading so that farther wall slices appear darker.
             // use arbitrary value of the farthest distance.
             dist = dist.floor();
@@ -985,6 +1090,7 @@ impl GameWindow {
                     (bottom_of_wall - top_of_wall) + 1.0,
                     x_offset,
                     self.base_light_value as f32 / dist,
+                    "/images/brick2.ff".to_string(),
                 );
             } else {
                 self.draw_wall_slice_rectangle_tinted(
@@ -994,6 +1100,7 @@ impl GameWindow {
                     (bottom_of_wall - top_of_wall) + 1.0,
                     x_offset,
                     (self.base_light_value as f32 - 50.0) / dist,
+                    "/images/brick2.ff".to_string(),
                 );
             }
 
@@ -1168,9 +1275,118 @@ impl GameWindow {
             }
 
             // TRACE THE NEXT RAY
-            cast_arc += 1;
+            cast_arc += 1; //FIXME. This should be 60/320 (FOV/projection plane width)?
+            // I don think so, because it goes from 0 to projplanewidht...
             if cast_arc >= self.angle360 as i32 {
                 cast_arc -= self.angle360 as i32;
+            }
+        }
+    }
+    /*
+        fn sprite_is_visible(self, sprite_x, sprite_y, radius) {
+            //https://bheisler.github.io/post/writing-raytracer-in-rust-part-1/
+            //https://stackoverflow.com/questions/5922027/how-to-determine-if-a-point-is-within-a-quadrilateral
+            // we create a trapezoid from the projection plane to the farthest the player can see
+            // we calculate the area of the trapezoid: (a+b)h/2
+            // then we create four triangles using the point. if the area of the four triangles
+            // is bigger than the area of the trapezoid, then the point is outside and the sprite is
+            // not visible
+        }
+    */
+
+    fn made_up_angle_to_deg(&mut self, some_rubish : i32) -> f32 {
+        //projectionplanewidth (320)        60
+        //some_rubish = x
+        some_rubish as f32 * 60.0 / self.projectionplanewidth as f32
+    }
+    fn draw_objects(&mut self) {
+        // First: recalculate objects distances and reorder the array
+        for obj in self.drawable_objects.iter_mut() {
+            obj.distance = (self.f_player_x - obj.x).hypot(self.f_player_y - obj.y);
+            obj.angle = ((obj.y-self.f_player_y) as f32).atan2((obj.x-self.f_player_x) as f32).to_degrees();
+            if obj.angle > 360.0 {
+                obj.angle -= 360.0; 
+            } else if obj.angle < 0.0 {
+                obj.angle += 360.0;
+            }
+        }
+        //self.drawable_objects.sort_by(|a, b| b.distance.partial_cmp(&a.distance).unwrap_or(core::cmp::Ordering::Equal));
+
+        // print
+        let column_unit: f32 = (self.projectionplanewidth as f32)/60.0; // the degrees
+        let half_screen_column = column_unit * 30.0;
+
+        let min_visible_angle;
+        let max_visible_angle;
+
+        /* for the sake of simplification lets asume all objects in front of us as drawable (180 of view) */ 
+        if self.f_player_arc < self.angle90 as i32 {
+            min_visible_angle = self.made_up_angle_to_deg(self.f_player_arc - self.angle90 as i32 + self.angle360 as i32);
+        } else {
+            min_visible_angle = self.made_up_angle_to_deg(self.f_player_arc as i32 - self.angle90 as i32);
+        }
+        if self.f_player_arc > self.angle270 as i32{
+            max_visible_angle = self.made_up_angle_to_deg(self.f_player_arc as i32 + self.angle90 as i32 - self.angle360 as i32);
+        } else {
+            max_visible_angle = self.made_up_angle_to_deg(self.f_player_arc as i32 + self.angle90 as i32);
+        }
+
+        let mut tmp_objects_buffer: BTreeSet<Drawable> = BTreeSet::new(); // temporary array to sort all visible objects
+        for obj in self.drawable_objects.iter() {
+            if (obj.angle >= min_visible_angle && obj.angle <= max_visible_angle) || (max_visible_angle < min_visible_angle && ( obj.angle <= min_visible_angle || obj.angle >= max_visible_angle)) {
+                tmp_objects_buffer.insert(obj.clone());
+            }
+        }
+
+        for obj in tmp_objects_buffer.iter() {
+            let ratio = self.f_player_distance_to_the_projection_plane as f32 / obj.distance;
+            let bottom_of_wall =
+                ratio * self.f_player_height as f32 + self.f_projection_plane_ycenter as f32;
+            let real_height: f32 = self.f_player_distance_to_the_projection_plane as f32
+                * obj.height as f32
+                / obj.distance;
+            
+            let top_of_wall = bottom_of_wall - real_height;
+
+             // this is the middle of the object (but in screen)
+            let obj_cast_column =
+                half_screen_column as f32 - (self.made_up_angle_to_deg(self.f_player_arc)-obj.angle) * column_unit;
+
+            let total_image_columns = obj.width as f32 * ratio;
+            if total_image_columns > 1.0 &&
+                obj_cast_column < self.projectionplanewidth as f32 + total_image_columns/2.0 && // is visible on the right side
+                    (obj_cast_column > 0.0 || obj_cast_column > -total_image_columns/2.0) {  // is visible on the left side
+                //calculate the field of view so we don´t try to draw something that is
+                //hidden
+                let min_cast_column = (obj_cast_column - total_image_columns / 2.0).max(0.0);
+                let max_cast_column = (obj_cast_column + total_image_columns / 2.0)
+                    .min(self.projectionplanewidth as f32);
+                let increment = obj.width as f32 / total_image_columns;
+                let mut x_image_column;
+                if (obj_cast_column - total_image_columns / 2.0) <= 0.0 {
+                    let delta = obj_cast_column - total_image_columns / 2.0;
+                    x_image_column = (total_image_columns - delta) * increment;
+                } else {
+                    x_image_column = 0.0;
+                }
+                for cast_column in
+                    min_cast_column.floor() as i32..max_cast_column.floor() as i32
+                {
+                    if self.f_player_to_wall_dist[cast_column as usize] > obj.distance {
+                    // print the column
+                        self.draw_wall_slice_rectangle_tinted(
+                            cast_column as f32,
+                            top_of_wall,
+                            1.0,
+                            (bottom_of_wall - top_of_wall) + 1.0,
+                            x_image_column,
+                            self.base_light_value as f32 / obj.distance,
+                            obj.texture.to_string(),
+                        );
+                    }
+                    // now lets draw the next column
+                    x_image_column += increment;
+                }
             }
         }
     }
@@ -1183,6 +1399,7 @@ impl GameWindow {
             self.draw_background();
         }
         self.raycast();
+        self.draw_objects();
         self.draw_overhead_map();
         self.draw_player_pov_on_overhead_map(0, 0);
         //self.blitOffscreenCanvas(); //we are writting directly to the buffer, then we copy. no need for this
@@ -1242,21 +1459,22 @@ impl GameWindow {
             dx = -(player_xdir * self.f_player_speed as f32).round();
             dy = -(player_ydir * self.f_player_speed as f32).round();
         }
-        self.f_player_x += dx;
-        self.f_player_y += dy;
 
-        // compute cell position
+        let mut new_player_x = self.f_player_x + dx;
+        let mut new_player_y = self.f_player_y + dy;
+
         let player_xcell = (self.f_player_x / self.tile_size as f32).floor();
         let player_ycell = (self.f_player_y / self.tile_size as f32).floor();
 
+        let min_distance_to_wall = 8.0;
+
         // compute position relative to cell (ie: how many pixel from edge of cell)
-        let player_xcell_offset = self.f_player_x % self.tile_size as f32;
-        let player_ycell_offset = self.f_player_y % self.tile_size as f32;
-
-        let min_distance_to_wall = 30.0;
-
+        let new_player_xcell_offset = new_player_x % self.tile_size as f32;
+        let new_player_ycell_offset = new_player_y % self.tile_size as f32;
         // make sure the player don't bump into walls
-        if dx > 0.0 {
+        //we check if the next position is too close to the border
+        //from the current or the next cell and back the player to the previous position
+        if dx > 0.5 {
             // moving right
             if self
                 .f_map
@@ -1267,13 +1485,13 @@ impl GameWindow {
                 )
                 .unwrap()
                 != 'O'
-                && player_xcell_offset > (self.tile_size as f32 - min_distance_to_wall)
+                && (new_player_xcell_offset < (min_distance_to_wall)
+                    || new_player_xcell_offset > (self.tile_size as f32 - min_distance_to_wall))
             {
                 // back player up
-                self.f_player_x -=
-                    player_xcell_offset - (self.tile_size as f32 - min_distance_to_wall);
+                new_player_x = self.f_player_x;
             }
-        } else {
+        } else if dx < 0.5 {
             // moving left
             if self
                 .f_map
@@ -1284,14 +1502,15 @@ impl GameWindow {
                 )
                 .unwrap()
                 != 'O'
-                && player_xcell_offset < (min_distance_to_wall)
+                && (new_player_xcell_offset < (min_distance_to_wall)
+                    || new_player_xcell_offset > (self.tile_size as f32 - min_distance_to_wall))
             {
                 // back player up
-                self.f_player_x += min_distance_to_wall - player_xcell_offset;
+                new_player_x = self.f_player_x;
             }
         }
 
-        if dy < 0.0 {
+        if dy < -0.5 {
             // moving up
             if self
                 .f_map
@@ -1302,12 +1521,13 @@ impl GameWindow {
                 )
                 .unwrap()
                 != 'O'
-                && player_ycell_offset < (min_distance_to_wall)
+                && (new_player_ycell_offset > (self.tile_size as f32 - min_distance_to_wall)
+                    || new_player_ycell_offset < (min_distance_to_wall))
             {
                 // back player up
-                self.f_player_y += min_distance_to_wall - player_ycell_offset;
+                new_player_y = self.f_player_y;
             }
-        } else {
+        } else if dy > 0.5 {
             // moving down
             if self
                 .f_map
@@ -1318,13 +1538,40 @@ impl GameWindow {
                 )
                 .unwrap()
                 != 'O'
-                && player_ycell_offset > (self.tile_size as f32 - min_distance_to_wall)
+                && (new_player_ycell_offset > (self.tile_size as f32 - min_distance_to_wall)
+                    || new_player_ycell_offset < (min_distance_to_wall))
             {
                 // back player up
-                self.f_player_y -=
-                    player_ycell_offset - (self.tile_size as f32 - min_distance_to_wall);
+                new_player_y = self.f_player_y;
             }
         }
+        //finally... back up any invalid movement that was not saved on the previous computation
+        let new_player_xcell = (new_player_x / self.tile_size as f32).floor();
+        let new_player_ycell = (new_player_y / self.tile_size as f32).floor();
+
+        if self
+            .f_map
+            .chars()
+            .nth(
+                ((new_player_ycell as i32 * self.map_width as i32) + new_player_xcell as i32)
+                    as usize,
+            )
+            .unwrap()
+            != 'O'
+        {
+            //the new cell is not allowed
+            if new_player_xcell != player_xcell && (dx >= 0.5 || dx <= -0.5) {
+                //moving left or right caused us to move to an invalid cell
+                new_player_x = self.f_player_x; // undo the movement in this direction
+            }
+
+            if new_player_ycell != player_ycell && (dy < -0.5 || dy > 0.5) {
+                new_player_y = self.f_player_y; //undo the movement
+            }
+        }
+
+        self.f_player_x = new_player_x;
+        self.f_player_y = new_player_y;
 
         if self.f_key_look_up {
             self.f_projection_plane_ycenter += 15;
