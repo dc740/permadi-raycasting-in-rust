@@ -1350,9 +1350,22 @@ impl GameWindow {
             
             let top_of_wall = bottom_of_wall - real_height;
 
-             // this is the middle of the object (but in screen)
-            let obj_cast_column =
-                half_screen_column as f32 - (self.made_up_angle_to_deg(self.f_player_arc)-obj.angle) * column_unit;
+            
+            let player_angle = self.made_up_angle_to_deg(self.f_player_arc);
+            let delta_angle;
+            if player_angle > 270.0 && obj.angle < 90.0 {
+                delta_angle = -(obj.angle + 360.0 - player_angle);
+            } else if obj.angle > 270.0 && player_angle < 90.0 {
+                delta_angle = player_angle + 360.0 - obj.angle;
+            }
+            else {
+                delta_angle = player_angle-obj.angle;
+            }
+
+            // this is the middle column of the object (if it were in screen)
+            // it can be negative, because the center of the object may be outside
+            // but that doesn't mean all of it is outside.
+            let obj_cast_column = half_screen_column as f32 - delta_angle * column_unit;
 
             let total_image_columns = obj.width as f32 * ratio;
             if total_image_columns > 1.0 &&
