@@ -1043,14 +1043,16 @@ impl GameWindow {
                 // the next function call (drawRayOnMap()) is not a part of raycating rendering part,
                 // it just draws the ray on the overhead map to illustrate the raycasting process
                 self.draw_ray_on_overhead_map(x_intersection, horizontal_grid, 0, 255, 0, 255);
+                self.f_player_to_wall_dist[cast_column as usize] =
+                    dist_to_horizontal_grid_being_hit;
                 dist = dist_to_horizontal_grid_being_hit / self.f_fish_table[cast_column as usize];
                 let ratio = self.f_player_distance_to_the_projection_plane as f32 / dist;
                 bottom_of_wall =
                     ratio * self.f_player_height as f32 + self.f_projection_plane_ycenter as f32;
 
-                //                         
+                //
                 // Projected Slice Height=(Actual Slice Height/Distance to the Slice) * Distance to Projection Plane
-                //                         
+                //
                 let real_height: f32 = self.f_player_distance_to_the_projection_plane as f32 //277
                     * self.wall_height as f32  //64
                     / dist;
@@ -1064,6 +1066,7 @@ impl GameWindow {
                 // the next function call (drawRayOnMap()) is not a part of raycating rendering part,
                 // it just draws the ray on the overhead map to illustrate the raycasting process
                 self.draw_ray_on_overhead_map(vertical_grid, y_intersection, 0, 0, 255, 255);
+                self.f_player_to_wall_dist[cast_column as usize] = dist_to_vertical_grid_being_hit;
                 dist = dist_to_vertical_grid_being_hit as f32
                     / self.f_fish_table[cast_column as usize];
 
@@ -1078,7 +1081,6 @@ impl GameWindow {
                 top_of_wall = bottom_of_wall - real_height;
             }
 
-            self.f_player_to_wall_dist[cast_column as usize] = dist;
             // Add simple shading so that farther wall slices appear darker.
             // use arbitrary value of the farthest distance.
             dist = dist.floor();
@@ -1278,7 +1280,7 @@ impl GameWindow {
 
             // TRACE THE NEXT RAY
             cast_arc += 1; //FIXME. This should be 60/320 (FOV/projection plane width)?
-            // I don think so, because it goes from 0 to projplanewidht...
+                           // I don think so, because it goes from 0 to projplanewidht...
             if cast_arc >= self.angle360 as i32 {
                 cast_arc -= self.angle360 as i32;
             }
@@ -1296,7 +1298,7 @@ impl GameWindow {
         }
     */
 
-    fn made_up_angle_to_deg(&mut self, some_rubish : i32) -> f32 {
+    fn made_up_angle_to_deg(&mut self, some_rubish: i32) -> f32 {
         //projectionplanewidth (320)        60
         //some_rubish = x
         some_rubish as f32 * 60.0 / self.projectionplanewidth as f32
@@ -1305,9 +1307,11 @@ impl GameWindow {
         // First: recalculate objects distances and reorder the array
         for obj in self.drawable_objects.iter_mut() {
             obj.distance = (self.f_player_x - obj.x).hypot(self.f_player_y - obj.y);
-            obj.angle = ((obj.y-self.f_player_y) as f32).atan2((obj.x-self.f_player_x) as f32).to_degrees();
+            obj.angle = ((obj.y - self.f_player_y) as f32)
+                .atan2((obj.x - self.f_player_x) as f32)
+                .to_degrees();
             if obj.angle > 360.0 {
-                obj.angle -= 360.0; 
+                obj.angle -= 360.0;
             } else if obj.angle < 0.0 {
                 obj.angle += 360.0;
             }
@@ -1315,51 +1319,58 @@ impl GameWindow {
         //self.drawable_objects.sort_by(|a, b| b.distance.partial_cmp(&a.distance).unwrap_or(core::cmp::Ordering::Equal));
 
         // print
-        let column_unit: f32 = (self.projectionplanewidth as f32)/60.0; // the degrees
+        let column_unit: f32 = (self.projectionplanewidth as f32) / 60.0; // the degrees
         let half_screen_column = column_unit * 30.0;
 
         let min_visible_angle;
         let max_visible_angle;
 
-        /* for the sake of simplification lets asume all objects in front of us as drawable (180 of view) */ 
+        /* for the sake of simplification lets asume all objects in front of us as drawable (180 of view) */
         if self.f_player_arc < self.angle90 as i32 {
-            min_visible_angle = self.made_up_angle_to_deg(self.f_player_arc - self.angle90 as i32 + self.angle360 as i32);
+            min_visible_angle = self.made_up_angle_to_deg(
+                self.f_player_arc - self.angle90 as i32 + self.angle360 as i32,
+            );
         } else {
-            min_visible_angle = self.made_up_angle_to_deg(self.f_player_arc as i32 - self.angle90 as i32);
+            min_visible_angle =
+                self.made_up_angle_to_deg(self.f_player_arc as i32 - self.angle90 as i32);
         }
-        if self.f_player_arc > self.angle270 as i32{
-            max_visible_angle = self.made_up_angle_to_deg(self.f_player_arc as i32 + self.angle90 as i32 - self.angle360 as i32);
+        if self.f_player_arc > self.angle270 as i32 {
+            max_visible_angle = self.made_up_angle_to_deg(
+                self.f_player_arc as i32 + self.angle90 as i32 - self.angle360 as i32,
+            );
         } else {
-            max_visible_angle = self.made_up_angle_to_deg(self.f_player_arc as i32 + self.angle90 as i32);
+            max_visible_angle =
+                self.made_up_angle_to_deg(self.f_player_arc as i32 + self.angle90 as i32);
         }
 
         let mut tmp_objects_buffer: BTreeSet<Drawable> = BTreeSet::new(); // temporary array to sort all visible objects
         for obj in self.drawable_objects.iter() {
-            if (obj.angle >= min_visible_angle && obj.angle <= max_visible_angle) || (max_visible_angle < min_visible_angle && ( obj.angle <= min_visible_angle || obj.angle >= max_visible_angle)) {
+            if (obj.angle >= min_visible_angle && obj.angle <= max_visible_angle)
+                || (max_visible_angle < min_visible_angle
+                    && (obj.angle <= min_visible_angle || obj.angle >= max_visible_angle))
+            {
                 tmp_objects_buffer.insert(obj.clone());
             }
         }
 
         for obj in tmp_objects_buffer.iter() {
             let ratio = self.f_player_distance_to_the_projection_plane as f32 / obj.distance;
-            let bottom_of_wall =
-                ratio * (self.f_player_height as f32 - obj.z) + self.f_projection_plane_ycenter as f32;
+            let bottom_of_wall = ratio * (self.f_player_height as f32 - obj.z)
+                + self.f_projection_plane_ycenter as f32;
             let real_height: f32 = self.f_player_distance_to_the_projection_plane as f32
                 * obj.height as f32
                 / obj.distance;
-            
+
             let top_of_wall = bottom_of_wall - real_height;
 
-            
             let player_angle = self.made_up_angle_to_deg(self.f_player_arc);
             let delta_angle;
             if player_angle > 270.0 && obj.angle < 90.0 {
                 delta_angle = -(obj.angle + 360.0 - player_angle);
             } else if obj.angle > 270.0 && player_angle < 90.0 {
                 delta_angle = player_angle + 360.0 - obj.angle;
-            }
-            else {
-                delta_angle = player_angle-obj.angle;
+            } else {
+                delta_angle = player_angle - obj.angle;
             }
 
             // this is the middle column of the object (if it were in screen)
@@ -1370,7 +1381,9 @@ impl GameWindow {
             let total_image_columns = obj.width as f32 * ratio;
             if total_image_columns > 1.0 &&
                 obj_cast_column < self.projectionplanewidth as f32 + total_image_columns/2.0 && // is visible on the right side
-                    (obj_cast_column > 0.0 || obj_cast_column > -total_image_columns/2.0) {  // is visible on the left side
+                    (obj_cast_column > 0.0 || obj_cast_column > -total_image_columns/2.0)
+            {
+                // is visible on the left side
                 //calculate the field of view so we don´t try to draw something that is
                 //hidden
                 let min_cast_column = (obj_cast_column - total_image_columns / 2.0).max(0.0);
@@ -1384,11 +1397,9 @@ impl GameWindow {
                 } else {
                     x_image_column = 0.0;
                 }
-                for cast_column in
-                    min_cast_column.floor() as i32..max_cast_column.floor() as i32
-                {
+                for cast_column in min_cast_column.floor() as i32..max_cast_column.floor() as i32 {
                     if self.f_player_to_wall_dist[cast_column as usize] > obj.distance {
-                    // print the column
+                        // print the column
                         self.draw_wall_slice_rectangle_tinted(
                             cast_column as f32,
                             top_of_wall,
