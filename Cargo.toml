@@ -1,4 +1,11 @@
 [workspace]
 members = [ "main_app", "desktop_app" ]
 default-members = ["desktop_app"]
+resolver = "2"
 
+[workspace.package]
+authors = ["Emilio Moretti <emilio.moretti@gmail.com>"]
+edition = "2021"
+
+[workspace.dependencies]
+minifb = { version="0.24.0", default-features = false }
