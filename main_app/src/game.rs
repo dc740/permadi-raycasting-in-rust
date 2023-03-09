@@ -290,9 +290,9 @@ impl GameWindow {
             drawable_objects: vec![Drawable {
                 x: 120.0,
                 y: 120.0,
-                z: 10.0,
+                z: 25.0,
                 width: 32,
-                height: 32,
+                height: 50,
                 texture: "/images/arma_32.ff".to_string(),
                 distance: f32::MAX,
                 angle: 0.0,
@@ -1355,7 +1355,7 @@ impl GameWindow {
 
         for obj in tmp_objects_buffer.iter() {
             let ratio = self.f_player_distance_to_the_projection_plane as f32 / obj.distance;
-            let bottom_of_wall = ratio * (self.f_player_height as f32 - obj.z)
+            let bottom_of_wall = ratio * (self.f_player_height as f32 - obj.z + obj.height as f32/2.0)
                 + self.f_projection_plane_ycenter as f32;
             let real_height: f32 = self.f_player_distance_to_the_projection_plane as f32
                 * obj.height as f32
