@@ -91,10 +91,12 @@ pub struct Drawable {
     x: f32,
     y: f32,
     z: f32, // raise objects above the ground
+    texture_width: u8, //used for scaling
     width: u8,
     height: u8,
     texture: String,
-    distance: f32,
+    real_distance: f32,
+    x_distance: f32,
     angle: f32,
 }
 
@@ -102,8 +104,8 @@ pub struct Drawable {
 // Notice this is an ugly hack to use BTreeSet on a temporary array
 impl Ord for Drawable {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.distance
-            .partial_cmp(&other.distance)
+        self.x_distance
+            .partial_cmp(&other.x_distance)
             .unwrap_or(core::cmp::Ordering::Equal)
     }
 }
@@ -119,6 +121,7 @@ impl PartialEq for Drawable {
         self.texture == other.texture
             && self.x == other.x
             && self.y == other.y
+            && self.z == other.z
             && self.width == other.width
             && self.height == other.height
     }
@@ -291,10 +294,24 @@ impl GameWindow {
                 x: 120.0,
                 y: 120.0,
                 z: 25.0,
+                texture_width: 32,
                 width: 32,
                 height: 50,
                 texture: "/images/arma_32.ff".to_string(),
-                distance: f32::MAX,
+                real_distance: f32::MAX,
+                x_distance: f32::MAX,
+                angle: 0.0,
+            },
+            Drawable {
+                x: 100.0,
+                y: 290.0,
+                z: 25.0,
+                texture_width: 32,
+                width: 60,
+                height: 32,
+                texture: "/images/arma_32.ff".to_string(),
+                real_distance: f32::MAX,
+                x_distance: f32::MAX,
                 angle: 0.0,
             }],
 
@@ -532,7 +549,7 @@ impl GameWindow {
             // while there's a row to draw & not end of drawing area
             while y_error >= f_wall_texture_buffer.width as f32 && !y_error.is_nan() {
                 y_error -= f_wall_texture_buffer.width as f32;
-                if (target_index as usize) < canvas_len {
+                if target_index > 0 && (target_index as usize) < canvas_len {
                     self.canvas[target_index as usize] = u8_to_color(
                         alpha,
                         red.floor() as u8,
@@ -1306,10 +1323,14 @@ impl GameWindow {
     fn draw_objects(&mut self) {
         // First: recalculate objects distances and reorder the array
         for obj in self.drawable_objects.iter_mut() {
-            obj.distance = (self.f_player_x - obj.x).hypot(self.f_player_y - obj.y);
+            obj.real_distance = (self.f_player_x - obj.x).hypot(self.f_player_y - obj.y);
             obj.angle = ((obj.y - self.f_player_y) as f32)
-                .atan2((obj.x - self.f_player_x) as f32)
-                .to_degrees();
+                .atan2((obj.x - self.f_player_x) as f32);
+            // for sorting the drawables, 
+            // we only care about the x component for the distance
+            // so we draw from the player to its front
+            obj.x_distance = obj.angle.sin().abs() * obj.real_distance;
+            obj.angle =obj.angle.to_degrees();
             if obj.angle > 360.0 {
                 obj.angle -= 360.0;
             } else if obj.angle < 0.0 {
@@ -1345,21 +1366,22 @@ impl GameWindow {
 
         let mut tmp_objects_buffer: BTreeSet<Drawable> = BTreeSet::new(); // temporary array to sort all visible objects
         for obj in self.drawable_objects.iter() {
-            if (obj.angle >= min_visible_angle && obj.angle <= max_visible_angle)
+            if obj.real_distance > 1.0 &&  //object distance must be at least 1 pixel, because real_height uses that and x/0 is undefined
+            ((obj.angle >= min_visible_angle && obj.angle <= max_visible_angle)
                 || (max_visible_angle < min_visible_angle
-                    && (obj.angle <= min_visible_angle || obj.angle >= max_visible_angle))
+                    && (obj.angle <= min_visible_angle || obj.angle >= max_visible_angle)))
             {
                 tmp_objects_buffer.insert(obj.clone());
             }
         }
 
-        for obj in tmp_objects_buffer.iter() {
-            let ratio = self.f_player_distance_to_the_projection_plane as f32 / obj.distance;
+        for obj in tmp_objects_buffer.iter().rev() {
+            let ratio = self.f_player_distance_to_the_projection_plane as f32 / obj.real_distance;
             let bottom_of_wall = ratio * (self.f_player_height as f32 - obj.z + obj.height as f32/2.0)
                 + self.f_projection_plane_ycenter as f32;
             let real_height: f32 = self.f_player_distance_to_the_projection_plane as f32
                 * obj.height as f32
-                / obj.distance;
+                / obj.real_distance;
 
             let top_of_wall = bottom_of_wall - real_height;
 
@@ -1389,7 +1411,7 @@ impl GameWindow {
                 let min_cast_column = (obj_cast_column - total_image_columns / 2.0).max(0.0);
                 let max_cast_column = (obj_cast_column + total_image_columns / 2.0)
                     .min(self.projectionplanewidth as f32);
-                let increment = obj.width as f32 / total_image_columns;
+                let increment = obj.texture_width as f32 / total_image_columns;
                 let mut x_image_column;
                 if (obj_cast_column - total_image_columns / 2.0) <= 0.0 {
                     let delta = obj_cast_column - total_image_columns / 2.0;
@@ -1398,7 +1420,8 @@ impl GameWindow {
                     x_image_column = 0.0;
                 }
                 for cast_column in min_cast_column.floor() as i32..max_cast_column.floor() as i32 {
-                    if self.f_player_to_wall_dist[cast_column as usize] > obj.distance {
+                    // FIXME this check fails because distance is now only x value!
+                    if self.f_player_to_wall_dist[cast_column as usize] > obj.real_distance {
                         // print the column
                         self.draw_wall_slice_rectangle_tinted(
                             cast_column as f32,
@@ -1406,7 +1429,7 @@ impl GameWindow {
                             1.0,
                             (bottom_of_wall - top_of_wall) + 1.0,
                             x_image_column,
-                            self.base_light_value as f32 / obj.distance,
+                            self.base_light_value as f32 / obj.real_distance,
                             obj.texture.to_string(),
                         );
                     }
