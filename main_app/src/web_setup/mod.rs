@@ -62,7 +62,7 @@ pub fn main() {
     let mut textures_loaded = false;
 
     // create the closure for updating and rendering the game.
-    *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
+    *g.as_ref().borrow_mut() = Some(Closure::wrap(Box::new(move || {
         if textures_loaded {
             // game step
             raycast.game_step(&window);
@@ -80,7 +80,7 @@ pub fn main() {
             };
         } else {
             //check if there is any new texture available, and move it to the assets
-            for (key, value) in downloaded_textures.borrow().iter() {
+            for (key, value) in downloaded_textures.as_ref().borrow().iter() {
                 raycast.assets.textures.insert(key.clone(), value.clone());
             }
 
@@ -93,10 +93,10 @@ pub fn main() {
                 },
                 Err(_) => (),
             };*/
-            if raycast.assets.textures.len() == 5 {
+            if raycast.assets.textures.len() >= 7 { //FIXME: Remember to update this when you add more textures (or refactor this hack)
                 console::log_1(&"All textures have been loaded. Time to start the game.".into());
                 textures_loaded = true;
-                worker_handle.borrow_mut().terminate();
+                worker_handle.as_ref().borrow_mut().terminate();
             }
         }
         // schedule this closure for running again at next frame
@@ -162,7 +162,7 @@ fn get_on_msg_callback(
         let filename = &full_array[0..index_element];
         let filename_str = std::str::from_utf8(&filename).expect("invalid utf-8 sequence");
         let blob = &full_array[index_element + 1..];
-        let mut buffer = textures_buffer.borrow_mut();
+        let mut buffer = textures_buffer.as_ref().borrow_mut();
         let buf = Cursor::new(blob); //this unwrap throws erros if the file doesn't exist
         let mut img = Decoder::new(buf).unwrap();
         let data = img
@@ -170,7 +170,7 @@ fn get_on_msg_callback(
             .unwrap()
             .chunks_exact(2)
             .into_iter()
-            .map(|a| u16::from_ne_bytes([a[0], a[1]]))
+            .map(|a| a[1])
             .collect();
 
         let (w, h) = img.dimensions();

@@ -76,11 +76,6 @@ pub fn clamp_i32_to_u8(value: i32) -> u8 {
 }
 
 #[inline]
-pub fn clamp_u16_to_u8(value: u16) -> u8 {
-    (value & 0xffff) as u8
-}
-
-#[inline]
 pub fn u8_to_color(alpha: u8, red: u8, green: u8, blue: u8) -> u32 {
     #[cfg(not(feature = "web"))]
     {
@@ -595,13 +590,10 @@ impl GameWindow {
             // Cheap shading trick by using brightnessLevel (which doesn't really have to correspond to "brightness")
             // to alter colors.  You can use logarithmic falloff or linear falloff to produce some interesting effect
             let f_wall_texture_pixels = &f_wall_texture_buffer.data;
-            let red = clamp_u16_to_u8(f_wall_texture_pixels[source_index as usize]) as f32
-                * brightness_level; //.floor();
-            let green = clamp_u16_to_u8(f_wall_texture_pixels[source_index as usize + 1]) as f32
-                * brightness_level; //.floor();
-            let blue = clamp_u16_to_u8(f_wall_texture_pixels[source_index as usize + 2]) as f32
-                * brightness_level; //.floor();
-            let alpha = clamp_u16_to_u8(f_wall_texture_pixels[source_index as usize + 3]); //.floor();
+            let red = f_wall_texture_pixels[source_index as usize] as f32 * brightness_level; //.floor();
+            let green = f_wall_texture_pixels[source_index as usize + 1] as f32 * brightness_level; //.floor();
+            let blue = f_wall_texture_pixels[source_index as usize + 2] as f32 * brightness_level; //.floor();
+            let alpha = f_wall_texture_pixels[source_index as usize + 3]; //.floor();
 
             // while there's a row to draw & not end of drawing area
             while y_error >= f_wall_texture_buffer.width as f32 && !y_error.is_nan() {
@@ -827,10 +819,10 @@ impl GameWindow {
         for y_position in 0..self.projectionplaneheight as i32 {
             cnv_index = self.projectionplanewidth as usize * y_position as usize;
             for x_position in (src_start..src_end).step_by(bytes_per_pixel) {
-                self.canvas[cnv_index] = ((clamp_u16_to_u8(self.assets.textures["/images/bgr.ff"].data[x_position +3 ]) as u32) << 24) | //r
-                (clamp_u16_to_u8(self.assets.textures["/images/bgr.ff"].data[x_position + 2]) as u32) << 16 | //g
-                (clamp_u16_to_u8(self.assets.textures["/images/bgr.ff"].data[x_position + 1]) as u32) << 8 |  //b
-                (clamp_u16_to_u8(self.assets.textures["/images/bgr.ff"].data[x_position]) as u32); //a
+                self.canvas[cnv_index] = ((self.assets.textures["/images/bgr.ff"].data[x_position +3 ] as u32) << 24) | //r
+                (self.assets.textures["/images/bgr.ff"].data[x_position + 2] as u32) << 16 | //g
+                (self.assets.textures["/images/bgr.ff"].data[x_position + 1] as u32) << 8 |  //b
+                (self.assets.textures["/images/bgr.ff"].data[x_position] as u32); //a
                 cnv_index += 1; //move 1 place to the right in X
             }
             if extra_columns != 0 {
@@ -838,10 +830,10 @@ impl GameWindow {
                 for x_position in
                     (extra_start..extra_start + extra_columns).step_by(bytes_per_pixel)
                 {
-                    self.canvas[cnv_index] = ((clamp_u16_to_u8(self.assets.textures["/images/bgr.ff"].data[x_position +3 ]) as u32) << 24) | //r
-                    (clamp_u16_to_u8(self.assets.textures["/images/bgr.ff"].data[x_position + 2]) as u32) << 16 | //g
-                    (clamp_u16_to_u8(self.assets.textures["/images/bgr.ff"].data[x_position + 1]) as u32) << 8 |  //b
-                    (clamp_u16_to_u8(self.assets.textures["/images/bgr.ff"].data[x_position]) as u32); //a
+                    self.canvas[cnv_index] = ((self.assets.textures["/images/bgr.ff"].data[x_position +3 ] as u32) << 24) | //r
+                    (self.assets.textures["/images/bgr.ff"].data[x_position + 2] as u32) << 16 | //g
+                    (self.assets.textures["/images/bgr.ff"].data[x_position + 1] as u32) << 8 |  //b
+                    (self.assets.textures["/images/bgr.ff"].data[x_position] as u32); //a
                     cnv_index += 1; //move 1 place to the right in X
                 }
             }
@@ -1229,25 +1221,20 @@ impl GameWindow {
 
                             // Cheap shading trick
                             let brightness_level = 150.0 / actual_distance;
-                            let red = clamp_u16_to_u8(
-                                self.assets.textures["/images/floortile.ff"].data
-                                    [source_index as usize],
-                            ) as f32
+                            let red = self.assets.textures["/images/floortile.ff"].data
+                                [source_index as usize]
+                                as f32
                                 * brightness_level;
-                            let green = clamp_u16_to_u8(
-                                self.assets.textures["/images/floortile.ff"].data
-                                    [source_index as usize + 1],
-                            ) as f32
+                            let green = self.assets.textures["/images/floortile.ff"].data
+                                [source_index as usize + 1]
+                                as f32
                                 * brightness_level;
-                            let blue = clamp_u16_to_u8(
-                                self.assets.textures["/images/floortile.ff"].data
-                                    [source_index as usize + 2],
-                            ) as f32
+                            let blue = self.assets.textures["/images/floortile.ff"].data
+                                [source_index as usize + 2]
+                                as f32
                                 * brightness_level;
-                            let alpha = clamp_u16_to_u8(
-                                self.assets.textures["/images/floortile.ff"].data
-                                    [source_index as usize + 3],
-                            );
+                            let alpha = self.assets.textures["/images/floortile.ff"].data
+                                [source_index as usize + 3];
 
                             // Draw the pixel
                             self.canvas[target_index as usize] = u8_to_color(
@@ -1313,24 +1300,17 @@ impl GameWindow {
                         //println!("sourceIndex="+sourceIndex);
                         // Cheap shading trick
                         let brightness_level = 100.0 / diagonal_distance;
-                        let red = clamp_u16_to_u8(
-                            self.assets.textures["/images/tile41.ff"].data[source_index as usize],
-                        ) as f32
+                        let red = self.assets.textures["/images/tile41.ff"].data
+                            [source_index as usize] as f32
                             * brightness_level;
-                        let green = clamp_u16_to_u8(
-                            self.assets.textures["/images/tile41.ff"].data
-                                [source_index as usize + 1],
-                        ) as f32
+                        let green = self.assets.textures["/images/tile41.ff"].data
+                            [source_index as usize + 1] as f32
                             * brightness_level;
-                        let blue = clamp_u16_to_u8(
-                            self.assets.textures["/images/tile41.ff"].data
-                                [source_index as usize + 2],
-                        ) as f32
+                        let blue = self.assets.textures["/images/tile41.ff"].data
+                            [source_index as usize + 2] as f32
                             * brightness_level;
-                        let alpha = clamp_u16_to_u8(
-                            self.assets.textures["/images/tile41.ff"].data
-                                [source_index as usize + 3],
-                        );
+                        let alpha = self.assets.textures["/images/tile41.ff"].data
+                            [source_index as usize + 3];
 
                         // Draw the pixel
                         self.canvas[target_index as usize] = u8_to_color(

@@ -15,7 +15,7 @@ use std::{cell::RefCell, rc::Rc};
 pub struct Texture {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u16>,
+    pub data: Vec<u8>,
 }
 
 pub struct Assets {
@@ -71,7 +71,8 @@ impl Assets {
             .unwrap()
             .chunks_exact(2)
             .into_iter()
-            .map(|a| u16::from_ne_bytes([a[0], a[1]]))
+            .map(|a| a[1]) //we could do .map(|a| u16::from_ne_bytes([a[0], a[1]])) here
+            // but we only care about the first 8 bits
             .collect();
         Ok(Texture {
             width: w,
