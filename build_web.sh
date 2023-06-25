@@ -10,6 +10,7 @@ cp ./js/*.js  demo_server/web_app/js/
 echo Copying image files
 mkdir -p demo_server/web_app/images
 cp ./images/*.ff  demo_server/web_app/images/
+cp ./resources.json  demo_server/web_app/
 
 echo Compiling web application
 cd main_app

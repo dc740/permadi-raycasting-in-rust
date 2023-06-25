@@ -2,12 +2,10 @@ pub(crate) mod error;
 pub(crate) mod loader;
 
 use console_error_panic_hook;
-use farfarbfeld::Decoder;
 use js_sys::Uint8Array;
 use minifb::{Window, WindowOptions};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::panic;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -17,7 +15,8 @@ use web_sys::MessageEvent;
 use web_sys::Worker;
 
 use crate::game::GameWindow;
-use crate::loader::Texture;
+use crate::generic_loader_impl::load_farbfeld;
+use crate::loader::{Assets, WebFileLoader};
 
 const WIDTH: usize = 320;
 const HEIGHT: usize = 200;
@@ -35,10 +34,22 @@ fn request_animation_frame(f: &Closure<dyn FnMut()>) {
 #[wasm_bindgen(start)]
 pub fn main() {
     panic::set_hook(Box::new(console_error_panic_hook::hook));
-    let mut raycast = GameWindow::new(WIDTH, HEIGHT);
-    let downloaded_textures: Rc<RefCell<HashMap<String, Texture>>> =
+    let downloaded_assets: Rc<RefCell<HashMap<String, Vec<u8>>>> =
         Rc::new(RefCell::new(HashMap::new()));
-    let textures_buffer = Rc::clone(&downloaded_textures);
+    let assets_buffer = Rc::clone(&downloaded_assets);
+    let worker_handle = start_file_downloader_worker(assets_buffer);
+    let loader = WebFileLoader{
+        worker: worker_handle.clone(),
+    };
+    let assets = Assets {
+        root: "./".to_string(),
+        textures: HashMap::new(),
+        resources: None,
+        loader: Box::new(loader),
+    };
+
+    let mut raycast = GameWindow::new(WIDTH, HEIGHT, assets);
+
     let mut window = Window::new("Bouncy Box demo", WIDTH, HEIGHT, WindowOptions::default())
         .unwrap_or_else(|e| {
             panic!("{}", e);
@@ -51,14 +62,15 @@ pub fn main() {
     window
         .update_with_buffer(raycast.get_buffer_to_print(), WIDTH, HEIGHT)
         .unwrap();
-    let worker_handle = start_file_downloader_worker(textures_buffer);
     raycast.init();
-
+/*
     #[cfg(not(feature = "web"))]
     raycast.assets.load_some_textures();
     #[cfg(feature = "web")]
     raycast.assets.load_some_textures(worker_handle.clone());
-
+*/
+    raycast.assets.init();
+    let mut textures_in_progress = false;
     let mut textures_loaded = false;
 
     // create the closure for updating and rendering the game.
@@ -67,6 +79,7 @@ pub fn main() {
             // game step
             raycast.game_step(&window);
 
+            raycast.move_doors_demo();
             // as the buffer is referenced from inside the ImageData, and
             // we push that to the canvas, so we could call update() and
             // avoid all this. I don't think it's possible to get artifacts
@@ -80,23 +93,64 @@ pub fn main() {
             };
         } else {
             //check if there is any new texture available, and move it to the assets
-            for (key, value) in downloaded_textures.as_ref().borrow().iter() {
-                raycast.assets.textures.insert(key.clone(), value.clone());
+            for (key, value) in downloaded_assets.as_ref().borrow().iter() {
+                if key.ends_with("resources.json") {
+                    if !textures_in_progress {
+                        console::log_2(&"Loading resources:".into(), &key.into());
+                        let resources_str = std::str::from_utf8(&value).unwrap();
+                        raycast.assets.resources = serde_json::from_str(&resources_str).unwrap();
+                        // start loading the remaining files
+                        raycast.assets.load();
+                        textures_in_progress = true;
+                    }
+                }
+                else {
+                    console::log_2(&"Loading texture:".into(), &key.into());
+                    let texture = load_farbfeld(value).unwrap();
+                    match raycast.assets.resources.as_mut() {
+                        Some(resources) => {
+                            for resource_img in &resources.images {
+                                if &resource_img.path == key {
+                                    raycast.assets.textures.insert(resource_img.id, texture);
+                                    break;
+                                }
+                            }
+                        },
+                        None => {},
+                    }
+                }
             }
 
-            /* clean up afterwards? nah, not filling like it
-            match downloaded_textures.borrow_mut() {
-                Ok(textures) => {
-                    for (key, value) in &mut raycast.assets.textures {
-                        textures.remove(&key.as_str()); // only remove the ones we have
+            /* clean up the download buffer so we don't duplicate the references for no reason at all. */
+            let mut textures = downloaded_assets.as_ref().borrow_mut();
+            for (texture_id, _value) in &mut raycast.assets.textures {
+                    match raycast.assets.resources.as_mut() {
+                        Some(resources) => {
+                            for resource_img in &resources.images {
+                                if &resource_img.id == texture_id {
+                                    let removed = textures.remove(resource_img.path.as_str());
+                                    // if it gets removed from the buffer it means it completed the
+                                    // cycle: request to download, store in buffer, copy to
+                                    // internal structure for later use
+                                    match removed {
+                                        Some(_) => console::log_2(&"Image downloaded ".into(), &JsValue::from_str(resource_img.path.as_str())),
+                                        None => ()
+                                    }
+                                    break;
+                                }
+                            }
+                        },
+                        None => {},
                     }
-                },
-                Err(_) => (),
-            };*/
-            if raycast.assets.textures.len() >= 7 { //FIXME: Remember to update this when you add more textures (or refactor this hack)
-                console::log_1(&"All textures have been loaded. Time to start the game.".into());
-                textures_loaded = true;
-                worker_handle.as_ref().borrow_mut().terminate();
+                
+            }
+
+            if let Some(resources) = &raycast.assets.resources {
+                if raycast.assets.textures.len() == resources.images.len() {
+                    console::log_1(&"All initial textures have been loaded. Time to start the game.".into());
+                    textures_loaded = true;
+                    worker_handle.as_ref().borrow_mut().terminate();
+                }
             }
         }
         // schedule this closure for running again at next frame
@@ -108,7 +162,7 @@ pub fn main() {
 }
 
 pub fn start_file_downloader_worker(
-    textures_buffer: Rc<RefCell<HashMap<String, Texture>>>,
+    assets_buffer: Rc<RefCell<HashMap<String, Vec<u8>>>>,
 ) -> Rc<RefCell<web_sys::Worker>> {
     // This is not strictly needed but makes debugging a lot easier.
     // Should not be used in productive deployments.
@@ -124,18 +178,18 @@ pub fn start_file_downloader_worker(
     console::log_1(&"Created a new worker from within WASM".into());
 
     // Pass the worker to the function which sets up the `onchange` callback.
-    setup_file_downloader_worker_callback(worker_handle.clone(), textures_buffer);
+    setup_file_downloader_worker_callback(worker_handle.clone(), assets_buffer);
     worker_handle
 }
 
 fn setup_file_downloader_worker_callback(
     worker: Rc<RefCell<web_sys::Worker>>,
-    textures_buffer: Rc<RefCell<HashMap<String, Texture>>>,
+    assets_buffer: Rc<RefCell<HashMap<String, Vec<u8>>>>,
 ) {
     // Access worker behind shared handle, following the interior mutability pattern.
     let worker_handle = &*worker.borrow();
     //let _ = worker_handle.post_message(&number.into());
-    let persistent_callback_handle = get_on_msg_callback(textures_buffer);
+    let persistent_callback_handle = get_on_msg_callback(assets_buffer);
 
     // Since the worker returns the message asynchronously, we attach a callback to be
     // triggered when the worker returns.
@@ -146,9 +200,8 @@ fn setup_file_downloader_worker_callback(
 
 /// Create a closure to act on the message returned by the worker
 fn get_on_msg_callback(
-    textures_buffer_rc: Rc<RefCell<HashMap<String, Texture>>>,
+    assets_buffer_rc: Rc<RefCell<HashMap<String, Vec<u8>>>>,
 ) -> Closure<dyn FnMut(MessageEvent)> {
-    let textures_buffer = Rc::clone(&textures_buffer_rc);
     let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
         console::log_2(&"Received response: ".into(), &event.data().into());
 
@@ -157,30 +210,15 @@ fn get_on_msg_callback(
         let full_array: Vec<u8> = uint8_array.to_vec();
         let index_element = full_array
             .iter()
-            .position(|&x| x == 0x7C) // we search for the pipe character
+            .position(|&x| x == 0x0) // we search for the end of the null terminated string
             .unwrap();
         let filename = &full_array[0..index_element];
         let filename_str = std::str::from_utf8(&filename).expect("invalid utf-8 sequence");
         let blob = &full_array[index_element + 1..];
-        let mut buffer = textures_buffer.as_ref().borrow_mut();
-        let buf = Cursor::new(blob); //this unwrap throws erros if the file doesn't exist
-        let mut img = Decoder::new(buf).unwrap();
-        let data = img
-            .read_image()
-            .unwrap()
-            .chunks_exact(2)
-            .into_iter()
-            .map(|a| a[1])
-            .collect();
-
-        let (w, h) = img.dimensions();
+        let mut buffer = assets_buffer_rc.as_ref().borrow_mut();
         buffer.insert(
             filename_str.to_string(),
-            Texture {
-                width: w,
-                height: h,
-                data,
-            },
+            blob.to_vec(),
         ); // store the blob, will be parsed later
     }) as Box<dyn FnMut(_)>);
 

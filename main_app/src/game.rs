@@ -1,7 +1,7 @@
 use crate::loader::Assets;
 use minifb::{Key, Window};
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 /**********************************************
 Raycasting implementation in Rust.
 Original port: https://github.com/permadi-com/ray-cast/tree/master/demo/7
@@ -41,6 +41,9 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ***********************************************/
+
+const MAX_DOORS: usize = 64;
+
 //*******************************************************************//
 //* Convert arc to radian
 // This is NOT actual degrees. All degrees in the wall drawing logic
@@ -96,11 +99,6 @@ pub fn clamp_u32_to_u8(value: u32) -> u8 {
     x as u8
 }
 
-#[inline]
-pub fn tile_id(x: u32, y: u32) -> u32 {
-    y << 16 | x //yes, a large value (>2^16) would cause invalid results
-}
-
 #[derive(Clone)]
 pub struct Drawable {
     x: f32,
@@ -109,7 +107,7 @@ pub struct Drawable {
     texture_width: u8, //used for scaling
     width: u8,
     height: u8,
-    texture: String,
+    texture_id: u32,
     real_distance: f32,
     x_distance: f32,
     angle: f32,
@@ -133,7 +131,7 @@ impl PartialOrd for Drawable {
 
 impl PartialEq for Drawable {
     fn eq(&self, other: &Self) -> bool {
-        self.texture == other.texture
+        self.texture_id == other.texture_id
             && self.x == other.x
             && self.y == other.y
             && self.z == other.z
@@ -237,17 +235,26 @@ pub struct GameWindow {
     no_ceiling: bool,
 
     // 2 dimensional map
-    f_map: String,
+    f_map: [[u32; 20]; 20],
     map_width: f32,
     map_height: f32,
+    map_background_img: u32,
+    map_wall_img: [[u32; 20]; 20],
+    map_floor_img: [[u32; 20]; 20],
+    map_ceiling_img: [[u32; 20]; 20],
 
     //f_background_image_arc: i32,
     //f_background_image_angle: f32,
     base_light_value: i32,
+
+    // the position goes from 0 (closed) to tile_size(fully open)
+    door_positions: [u8; MAX_DOORS],
+    // this is just for demo purposes
+    door_opening: bool,
 }
 
 impl GameWindow {
-    pub fn new(width: usize, height: usize) -> Self {
+    pub fn new(width: usize, height: usize, assets: Assets) -> Self {
         let buffer_len: usize = (width * height) * 4 * 2;
         let canvas: Vec<u32> = vec![0; buffer_len];
         let projectionplanewidth = 320.0;
@@ -287,10 +294,7 @@ impl GameWindow {
             area_size: (width * height),
             // create the main canvas
             canvas,
-            assets: Assets {
-                root: "http://localhost".to_string(), //FIXME: make this better
-                textures: HashMap::new(),
-            },
+            assets,
             // size of tile (wall height)
             tile_size: 64.0,
             wall_height: 64.0,
@@ -349,27 +353,40 @@ impl GameWindow {
             f_player_height: 32.0,
             f_player_speed: 16.0,
             f_player_to_wall_dist: vec![f32::MAX; projectionplanewidth as usize + 1],
+            // TODO: I hardcoded a list of drawables here, just to test
             drawable_objects: vec![
                 Drawable {
-                    x: 120.0,
-                    y: 120.0,
+                    x: 620.0,
+                    y: 620.0,
                     z: 25.0,
                     texture_width: 32,
                     width: 32,
                     height: 50,
-                    texture: "/images/arma_32.ff".to_string(),
+                    texture_id: 163,
                     real_distance: f32::MAX,
                     x_distance: f32::MAX,
                     angle: 0.0,
                 },
                 Drawable {
-                    x: 100.0,
-                    y: 290.0,
+                    x: 600.0,
+                    y: 690.0,
                     z: 25.0,
                     texture_width: 32,
                     width: 60,
                     height: 32,
-                    texture: "/images/arma_32.ff".to_string(),
+                    texture_id: 163,
+                    real_distance: f32::MAX,
+                    x_distance: f32::MAX,
+                    angle: 0.0,
+                },
+                Drawable {
+                    x: 300.0,
+                    y: 1120.0,
+                    z: 25.0,
+                    texture_width: 32,
+                    width: 60,
+                    height: 32,
+                    texture_id: 42,
                     real_distance: f32::MAX,
                     x_distance: f32::MAX,
                     angle: 0.0,
@@ -397,9 +414,13 @@ impl GameWindow {
             no_ceiling: false,
 
             // 2 dimensional map
-            f_map: "".to_string(),
+            f_map: [[0; 20]; 20],
             map_width: 20.0,
             map_height: 20.0,
+            map_background_img:110,
+            map_wall_img: [[0; 20]; 20],
+            map_floor_img: [[0; 20]; 20],
+            map_ceiling_img: [[0; 20]; 20],
             //            animation_frame_id: 0,
 
             //fWallTextureCanvas,
@@ -408,8 +429,15 @@ impl GameWindow {
             //f_background_image_angle: 0.0,
             base_light_value: 180,
             //base_light_value_delta: 1,
+            door_positions: [0; MAX_DOORS],
+            door_opening: true,
         };
         return gw;
+    }
+
+    #[inline]
+    pub fn map_index(&mut self, x: i32, y:i32) -> u32 {
+        (y*self.tile_size as i32 + x) as u32
     }
 
     //*******************************************************************//
@@ -519,7 +547,7 @@ impl GameWindow {
             }
         }
     }
-
+    #[inline]
     fn draw_wall_slice_rectangle_tinted(
         &mut self,
         x_param: f32,
@@ -528,14 +556,14 @@ impl GameWindow {
         height: f32,
         x_offset_param: f32,
         brightness_level: f32,
-        texture_name: String,
+        texture_id: u32,
     ) {
         // wait until the texture loads
-        if !self.assets.textures.contains_key(&texture_name) {
+        if !self.assets.textures.contains_key(&texture_id) {
             return;
         }
         let f_wall_texture_buffer;
-        match self.assets.textures.get(&texture_name) {
+        match self.assets.textures.get(&texture_id) {
             None => panic!("Wall not loaded. Dunno what to do"),
             Some(wall_texture) => f_wall_texture_buffer = wall_texture,
         }
@@ -590,15 +618,16 @@ impl GameWindow {
             // Cheap shading trick by using brightnessLevel (which doesn't really have to correspond to "brightness")
             // to alter colors.  You can use logarithmic falloff or linear falloff to produce some interesting effect
             let f_wall_texture_pixels = &f_wall_texture_buffer.data;
+            let alpha = f_wall_texture_pixels[source_index as usize + 3]; //.floor();
+            
             let red = f_wall_texture_pixels[source_index as usize] as f32 * brightness_level; //.floor();
             let green = f_wall_texture_pixels[source_index as usize + 1] as f32 * brightness_level; //.floor();
             let blue = f_wall_texture_pixels[source_index as usize + 2] as f32 * brightness_level; //.floor();
-            let alpha = f_wall_texture_pixels[source_index as usize + 3]; //.floor();
 
             // while there's a row to draw & not end of drawing area
             while y_error >= f_wall_texture_buffer.width as f32 && !y_error.is_nan() {
                 y_error -= f_wall_texture_buffer.width as f32;
-                if target_index > 0 && (target_index as usize) < canvas_len {
+                if alpha != 0 && target_index > 0 && (target_index as usize) < canvas_len {
                     self.canvas[target_index as usize] = u8_to_color(
                         alpha,
                         red.floor() as u8,
@@ -614,6 +643,7 @@ impl GameWindow {
                     return;
                 }
             }
+            
             source_index += bytes_per_pixel * f_wall_texture_buffer.width;
             if source_index > last_source_index {
                 source_index = last_source_index;
@@ -734,6 +764,7 @@ impl GameWindow {
         }
 
         // CREATE A SIMPLE MAP.
+        /*
         // Use string for elegance (easier to see).  W=Wall, O=Opening
 
         let map3 = "WWWWWWWWWWWWWWWWWWWW\
@@ -756,9 +787,111 @@ impl GameWindow {
                 WOOWOWOWOOOWOOWWOWOW\
                 WOOOOOOOOOOWOOOOOOOW\
                 WWWWWWWWWWWWWWWWWWWW";
-        self.f_map = map3.to_string();
+        self.f_map = map3.to_string();*/
+        /*
+         * POC map definition:
+         * ---unused 16bits --- generic index 8 bits --- tile type 8 bits---
+         * where the generic index can be the door index for doors,
+         * and I don't know what else I could use it for in other cases
+         * lets say types:
+         * 0 - nothing
+         * 1 - wall
+         * 2 - door
+         *
+         * Emilio, remember to access it f_map[y][x]
+         */
+        self.f_map = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0x0002, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0x0102, 0, 1, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        ];
         self.map_width = 20.0;
         self.map_height = 20.0;
+        self.map_background_img = 110;
+        // stores walls and doors textures
+        self.map_wall_img = [
+            [83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83, 0, 0, 0, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 74, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 74, 0, 83, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83, 0, 0, 0, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
+            [83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83]
+        ];
+        self.map_floor_img = [
+            [162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 14, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
+            [162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162]
+       ];
+       self.map_ceiling_img = [
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
+            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101]
+        ];
     }
 
     //*******************************************************************//
@@ -767,23 +900,33 @@ impl GameWindow {
     fn draw_overhead_map(&mut self) {
         for r in 0..self.map_height as u32 {
             for c in 0..self.map_width as u32 {
-                if self
-                    .f_map
-                    .chars()
-                    .nth((r * self.map_width as u32 + c) as usize)
-                    .unwrap()
-                    != 'O'
-                {
-                    self.draw_fill_rectangle(
-                        c * self.f_minimap_width as u32, //self.projectionplanewidth + (c * self.f_minimap_width),
-                        r * self.f_minimap_width as u32,
-                        self.f_minimap_width as u32,
-                        self.f_minimap_width as u32,
-                        0,
-                        0,
-                        0,
-                        255,
-                    );
+                if self.f_map[r as usize][c as usize] & 0xf != 0 {
+                    if  self.f_map[r as usize][c as usize] & 0x2 == 0x2 {
+                        //this is a door
+                        self.draw_fill_rectangle(
+                            c * self.f_minimap_width as u32, //self.projectionplanewidth + (c * self.f_minimap_width),
+                            r * self.f_minimap_width as u32,
+                            self.f_minimap_width as u32,
+                            self.f_minimap_width as u32,
+                            200,
+                            50,
+                            50,
+                            255,
+                        );
+
+                    } else {
+                        // a regular wall
+                        self.draw_fill_rectangle(
+                            c * self.f_minimap_width as u32, //self.projectionplanewidth + (c * self.f_minimap_width),
+                            r * self.f_minimap_width as u32,
+                            self.f_minimap_width as u32,
+                            self.f_minimap_width as u32,
+                            0,
+                            0,
+                            0,
+                            255,
+                        );
+                    }
                 }
             }
         }
@@ -802,7 +945,7 @@ impl GameWindow {
         let bytes_per_pixel = 4;
         let pp_width_in_bytes = self.projectionplanewidth as usize * bytes_per_pixel;
         let src_width_in_bytes =
-            self.assets.textures["/images/bgr.ff"].width as usize * bytes_per_pixel;
+            self.assets.textures[&self.map_background_img].width as usize * bytes_per_pixel;
 
         let start_column = self.f_player_arc as usize;
         let mut src_start = start_column * bytes_per_pixel;
@@ -819,10 +962,10 @@ impl GameWindow {
         for y_position in 0..self.projectionplaneheight as i32 {
             cnv_index = self.projectionplanewidth as usize * y_position as usize;
             for x_position in (src_start..src_end).step_by(bytes_per_pixel) {
-                self.canvas[cnv_index] = ((self.assets.textures["/images/bgr.ff"].data[x_position +3 ] as u32) << 24) | //r
-                (self.assets.textures["/images/bgr.ff"].data[x_position + 2] as u32) << 16 | //g
-                (self.assets.textures["/images/bgr.ff"].data[x_position + 1] as u32) << 8 |  //b
-                (self.assets.textures["/images/bgr.ff"].data[x_position] as u32); //a
+                self.canvas[cnv_index] = ((self.assets.textures[&self.map_background_img].data[x_position +3 ] as u32) << 24) | //r
+                (self.assets.textures[&self.map_background_img].data[x_position + 2] as u32) << 16 | //g
+                (self.assets.textures[&self.map_background_img].data[x_position + 1] as u32) << 8 |  //b
+                (self.assets.textures[&self.map_background_img].data[x_position] as u32); //a
                 cnv_index += 1; //move 1 place to the right in X
             }
             if extra_columns != 0 {
@@ -830,10 +973,10 @@ impl GameWindow {
                 for x_position in
                     (extra_start..extra_start + extra_columns).step_by(bytes_per_pixel)
                 {
-                    self.canvas[cnv_index] = ((self.assets.textures["/images/bgr.ff"].data[x_position +3 ] as u32) << 24) | //r
-                    (self.assets.textures["/images/bgr.ff"].data[x_position + 2] as u32) << 16 | //g
-                    (self.assets.textures["/images/bgr.ff"].data[x_position + 1] as u32) << 8 |  //b
-                    (self.assets.textures["/images/bgr.ff"].data[x_position] as u32); //a
+                    self.canvas[cnv_index] = ((self.assets.textures[&self.map_background_img].data[x_position +3 ] as u32) << 24) | //r
+                    (self.assets.textures[&self.map_background_img].data[x_position + 2] as u32) << 16 | //g
+                    (self.assets.textures[&self.map_background_img].data[x_position + 1] as u32) << 8 |  //b
+                    (self.assets.textures[&self.map_background_img].data[x_position] as u32); //a
                     cnv_index += 1; //move 1 place to the right in X
                 }
             }
@@ -947,8 +1090,10 @@ impl GameWindow {
             cast_angle += self.angle360;
             cast_arc = rad_to_arc(cast_angle, self.projectionplanewidth);
         }
-
         for cast_column in 0..self.projectionplanewidth as u32 {
+            dist_to_next_xintersection = self.f_xstep_table[cast_arc as usize];
+            dist_to_next_yintersection = self.f_ystep_table[cast_arc as usize];
+
             // SEARCH FOR THE FIRST INTERSECTION OF THE CAST COLUMN AND A POSSIBLE WALL
             // We only need to search for the first tile borders. We will look for walls later.
             // We check which side the ray is pointing first
@@ -1006,7 +1151,6 @@ impl GameWindow {
                 // The step to the next x intersection is always the same for a given angle
                 // so this is optimized so we only calculate it at the beginning.
                 // The same happens with y intersections a few lines below
-                dist_to_next_xintersection = self.f_xstep_table[cast_arc as usize];
                 loop {
                     x_grid_index = (x_intersection / self.tile_size).floor() as i32;
                     y_grid_index = (horizontal_grid as f32 / self.tile_size as f32).floor() as i32;
@@ -1019,18 +1163,37 @@ impl GameWindow {
                         dist_to_horizontal_grid_being_hit = f32::MAX;
                         break;
                     }
-                    let map_index = y_grid_index * self.map_width as i32 + x_grid_index;
+                    
                     // If the grid is not an Opening, then stop
-                    if self.f_map.chars().nth(map_index as usize).unwrap() != 'O' {
-                        dist_to_horizontal_grid_being_hit = (x_intersection - self.f_player_x)
-                            * self.f_icos_table[cast_arc as usize];
-                        break;
+                    if self.f_map[y_grid_index as usize][x_grid_index as usize] & 0xf != 0 {
+                        if self.f_map[y_grid_index as usize][x_grid_index as usize] & 0x2 == 0x2 {
+                            //its a door
+                            let door_index =
+                                ((self.f_map[y_grid_index as usize][x_grid_index as usize] >> 8) & 0xff) as usize;
+                            // check if open, if the ray goes through and act accordingly
+                            let hit_x_on_tile = x_intersection % self.tile_size;
+                            if hit_x_on_tile + dist_to_next_xintersection / 2.0
+                                >= self.door_positions[door_index] as f32
+                            {
+                                // we hit a door and the ray must not continue
+                                let door_x_intersection =
+                                    x_intersection + dist_to_next_xintersection / 2.0; // intercept x = ax+xstep/2
+                                                                                       //let door_y_intersection = horizontal_grid + self.tile_size/2.0;// intercepty = ay+tile_size/2
+                                dist_to_horizontal_grid_being_hit = (door_x_intersection
+                                    - self.f_player_x)
+                                    * self.f_icos_table[cast_arc as usize];
+                                break;
+                            }
+                        } else {
+                            // its a wall
+                            dist_to_horizontal_grid_being_hit = (x_intersection - self.f_player_x)
+                                * self.f_icos_table[cast_arc as usize];
+                            break;
+                        }
                     }
                     // Else, keep looking.  At this point, the ray is not blocked, extend the ray to the next grid
-                    else {
-                        x_intersection += dist_to_next_xintersection;
-                        horizontal_grid += dist_to_next_horizontal_grid;
-                    }
+                    x_intersection += dist_to_next_xintersection;
+                    horizontal_grid += dist_to_next_horizontal_grid;
                 }
             }
             // FOLLOW X RAY
@@ -1061,7 +1224,6 @@ impl GameWindow {
             if cast_arc == self.arc_angle90 || cast_arc == self.arc_angle270 {
                 dist_to_vertical_grid_being_hit = f32::MAX;
             } else {
-                dist_to_next_yintersection = self.f_ystep_table[cast_arc as usize];
                 loop {
                     // compute current map position to inspect
                     x_grid_index = (vertical_grid as f32 / self.tile_size as f32).floor() as i32;
@@ -1075,17 +1237,36 @@ impl GameWindow {
                         dist_to_vertical_grid_being_hit = f32::MAX;
                         break;
                     }
-                    let map_index = y_grid_index * self.map_width as i32 + x_grid_index;
 
-                    if self.f_map.chars().nth(map_index as usize).unwrap() != 'O' {
-                        dist_to_vertical_grid_being_hit = (y_intersection as f32
-                            - self.f_player_y as f32)
-                            * self.f_isin_table[cast_arc as usize];
-                        break;
-                    } else {
-                        y_intersection += dist_to_next_yintersection;
-                        vertical_grid += dist_to_next_vertical_grid;
+                    if self.f_map[y_grid_index as usize][x_grid_index as usize] & 0xf != 0 {
+                        if self.f_map[y_grid_index as usize][x_grid_index as usize] & 0x2 == 0x2 {
+                            //its a door
+                            let door_index =
+                                ((self.f_map[y_grid_index as usize][x_grid_index as usize] >> 8) & 0xff) as usize;
+                            // check if open, if the ray goes through and act accordingly
+                            //
+                            let hit_y_on_tile = y_intersection % self.tile_size;
+                            if hit_y_on_tile + dist_to_next_yintersection / 2.0
+                                >= self.door_positions[door_index] as f32
+                            {
+                                // we hit a door and the ray must not continue
+                                let door_y_intersection =
+                                    y_intersection + dist_to_next_yintersection / 2.0; // intercept y = ay+xstep/2
+                                                                                       //let door_x_intersection = vertical_grid + self.tile_size/2.0;// interceptx = ax+tile_size/2
+                                dist_to_vertical_grid_being_hit = (door_y_intersection
+                                    - self.f_player_y)
+                                    * self.f_isin_table[cast_arc as usize];
+                                break;
+                            }
+                        } else {
+                            dist_to_vertical_grid_being_hit = (y_intersection as f32
+                                - self.f_player_y as f32)
+                                * self.f_isin_table[cast_arc as usize];
+                            break;
+                        }
                     }
+                    y_intersection += dist_to_next_yintersection;
+                    vertical_grid += dist_to_next_vertical_grid;
                 }
             }
 
@@ -1119,6 +1300,9 @@ impl GameWindow {
                     / dist;
                 top_of_wall = bottom_of_wall - real_height;
                 x_offset = x_intersection % self.tile_size as f32;
+                // update current map position to get the textures later
+                x_grid_index = (x_intersection as f32 / self.tile_size as f32).floor() as i32;
+                y_grid_index = (horizontal_grid as f32 / self.tile_size as f32).floor() as i32;
             }
             // else, we use xray instead (meaning the vertical wall is closer than
             //   the horizontal wall)
@@ -1139,11 +1323,18 @@ impl GameWindow {
                     * self.wall_height as f32
                     / dist;
                 top_of_wall = bottom_of_wall - real_height;
+                // update current map position to get the textures later
+                x_grid_index = (vertical_grid as f32 / self.tile_size as f32).floor() as i32;
+                y_grid_index = (y_intersection as f32 / self.tile_size as f32).floor() as i32;
             }
 
             // Add simple shading so that farther wall slices appear darker.
             // use arbitrary value of the farthest distance.
             dist = dist.floor();
+
+            // get the texture:
+            // x_grid_index y_grid_index
+            let wall_texture :u32 = self.map_wall_img[y_grid_index as usize][x_grid_index as usize];
 
             // Trick to give different shades between vertical and horizontal (you could also use different textures for each if you wish to)
             if is_vertical_hit {
@@ -1154,7 +1345,7 @@ impl GameWindow {
                     (bottom_of_wall - top_of_wall) + 1.0,
                     x_offset,
                     self.base_light_value as f32 / dist,
-                    "/images/brick2.ff".to_string(),
+                    wall_texture,
                 );
             } else {
                 self.draw_wall_slice_rectangle_tinted(
@@ -1164,7 +1355,7 @@ impl GameWindow {
                     (bottom_of_wall - top_of_wall) + 1.0,
                     x_offset,
                     (self.base_light_value as f32 - 50.0) / dist,
-                    "/images/brick2.ff".to_string(),
+                    wall_texture,
                 );
             }
 
@@ -1176,84 +1367,85 @@ impl GameWindow {
             // *************
             // FLOOR CASTING at the simplest!  Try to find ways to optimize this, you can do it!
             // *************
-            if self.assets.textures.contains_key("/images/floortile.ff") {
-                // find the first bit so we can just add the width to get the
-                // next row (of the same column)
-                let mut target_index: i32 =
-                    last_bottom_of_wall as i32 * (self.width * 1) as i32 + (1 * cast_column) as i32;
-                for row in last_bottom_of_wall as i32..self.projectionplaneheight as i32 {
-                    let straight_distance = self.f_player_height as f32
-                        / (row as f32 - projection_plane_center_y as f32)
-                        * self.f_player_distance_to_the_projection_plane as f32;
+            // find the first bit so we can just add the width to get the
+            // next row (of the same column)
+            let mut target_index: i32 =
+                last_bottom_of_wall as i32 * (self.width * 1) as i32 + (1 * cast_column) as i32;
+            for row in last_bottom_of_wall as i32..self.projectionplaneheight as i32 {
+                let straight_distance = self.f_player_height as f32
+                    / (row as f32 - projection_plane_center_y as f32)
+                    * self.f_player_distance_to_the_projection_plane as f32;
 
-                    let actual_distance: f32 =
-                        straight_distance * self.f_fish_table[cast_column as usize];
+                let actual_distance: f32 =
+                    straight_distance * self.f_fish_table[cast_column as usize];
 
-                    let mut y_end: i32 =
-                        (actual_distance * self.f_sin_table[cast_arc as usize]).floor() as i32;
-                    let mut x_end: i32 =
-                        (actual_distance * self.f_cos_table[cast_arc as usize]).floor() as i32;
+                let mut y_end: i32 =
+                    (actual_distance * self.f_sin_table[cast_arc as usize]).floor() as i32;
+                let mut x_end: i32 =
+                    (actual_distance * self.f_cos_table[cast_arc as usize]).floor() as i32;
 
-                    // Translate relative to viewer coordinates:
-                    x_end = x_end.wrapping_add(self.f_player_x as i32);
-                    y_end = y_end.wrapping_add(self.f_player_y as i32);
+                // Translate relative to viewer coordinates:
+                x_end = x_end.wrapping_add(self.f_player_x as i32);
+                y_end = y_end.wrapping_add(self.f_player_y as i32);
 
-                    // Get the tile intersected by ray:
-                    let cell_x: i32 = (x_end as f32 / self.tile_size as f32).floor() as i32;
-                    let cell_y: i32 = (y_end as f32 / self.tile_size as f32).floor() as i32;
-                    //println!("cell_x="+cell_x+" cell_y="+cell_y);
+                // Get the tile intersected by ray:
+                let cell_x: i32 = (x_end as f32 / self.tile_size as f32).floor() as i32;
+                let cell_y: i32 = (y_end as f32 / self.tile_size as f32).floor() as i32;
+                //println!("cell_x="+cell_x+" cell_y="+cell_y);
 
-                    //Make sure the tile is within our map
-                    if cell_x < self.map_width as i32
-                        && cell_y < self.map_height as i32
-                        && cell_x >= 0
-                        && cell_y >= 0
-                    {
-                        if target_index > 0 {
-                            // Find offset of tile and column in texture
-                            let tile_row = (y_end as f32 % self.tile_size as f32).floor() as i32;
-                            let tile_column = (x_end as f32 % self.tile_size as f32).floor() as i32;
-                            // Pixel to draw
-                            let source_index = (tile_row as u32
-                                * self.assets.textures["/images/floortile.ff"].width
-                                * bytes_per_pixel)
-                                + (bytes_per_pixel * tile_column as u32);
+                //Make sure the tile is within our map
+                if cell_x < self.map_width as i32
+                    && cell_y < self.map_height as i32
+                    && cell_x >= 0
+                    && cell_y >= 0
+                {
+                    if target_index > 0 {
+                        // Find texture
+                        let floor_texture_idx :u32 = self.map_floor_img[cell_y as usize][cell_x as usize];
+                        let floor_texture = &self.assets.textures[&floor_texture_idx];
+                        // Find offset of tile and column in texture
+                        let tile_row = (y_end as f32 % self.tile_size as f32).floor() as i32;
+                        let tile_column = (x_end as f32 % self.tile_size as f32).floor() as i32;
+                        // Pixel to draw
+                        let source_index = (tile_row as u32
+                            * floor_texture.width
+                            * bytes_per_pixel)
+                            + (bytes_per_pixel * tile_column as u32);
 
-                            // Cheap shading trick
-                            let brightness_level = 150.0 / actual_distance;
-                            let red = self.assets.textures["/images/floortile.ff"].data
-                                [source_index as usize]
-                                as f32
-                                * brightness_level;
-                            let green = self.assets.textures["/images/floortile.ff"].data
-                                [source_index as usize + 1]
-                                as f32
-                                * brightness_level;
-                            let blue = self.assets.textures["/images/floortile.ff"].data
-                                [source_index as usize + 2]
-                                as f32
-                                * brightness_level;
-                            let alpha = self.assets.textures["/images/floortile.ff"].data
-                                [source_index as usize + 3];
+                        // Cheap shading trick
+                        let brightness_level = 150.0 / actual_distance;
+                        let red = floor_texture.data
+                            [source_index as usize]
+                            as f32
+                            * brightness_level;
+                        let green = floor_texture.data
+                            [source_index as usize + 1]
+                            as f32
+                            * brightness_level;
+                        let blue = floor_texture.data
+                            [source_index as usize + 2]
+                            as f32
+                            * brightness_level;
+                        let alpha = floor_texture.data
+                            [source_index as usize + 3];
 
-                            // Draw the pixel
-                            self.canvas[target_index as usize] = u8_to_color(
-                                alpha,
-                                red.floor() as u8,
-                                green.floor() as u8,
-                                blue.floor() as u8,
-                            );
-                        }
-
-                        // Go to the next pixel (directly under the current pixel)
-                        target_index += (1 * self.width) as i32;
+                        // Draw the pixel
+                        self.canvas[target_index as usize] = u8_to_color(
+                            alpha,
+                            red.floor() as u8,
+                            green.floor() as u8,
+                            blue.floor() as u8,
+                        );
                     }
+
+                    // Go to the next pixel (directly under the current pixel)
+                    target_index += (1 * self.width) as i32;
                 }
             }
             // *************
             // CEILING CASTING at the simplest!  Try to find ways to optimize this, you can do it!
             // *************
-            if !self.no_ceiling && self.assets.textures.contains_key("/images/tile41.ff") {
+            if !self.no_ceiling {
                 // find the first bit so we can just add the width to get the
                 // next row (of the same column)
 
@@ -1288,28 +1480,31 @@ impl GameWindow {
                         && cell_x >= 0
                         && cell_y >= 0
                     {
+                        // Find the texture
+                        let ceiling_texture_idx :u32 = self.map_ceiling_img[cell_y as usize][cell_x as usize];
+                        let ceiling_texture = &self.assets.textures[&ceiling_texture_idx];
                         // Find offset of tile and column in texture
                         let tile_row: i32 = (y_end as f32 % self.tile_size as f32).floor() as i32;
                         let tile_column: i32 =
                             (x_end as f32 % self.tile_size as f32).floor() as i32;
                         // Pixel to draw
                         let source_index = (tile_row as u32
-                            * self.assets.textures["/images/tile41.ff"].width
+                            * ceiling_texture.width
                             * bytes_per_pixel)
                             + (bytes_per_pixel * tile_column as u32);
                         //println!("sourceIndex="+sourceIndex);
                         // Cheap shading trick
                         let brightness_level = 100.0 / diagonal_distance;
-                        let red = self.assets.textures["/images/tile41.ff"].data
+                        let red = ceiling_texture.data
                             [source_index as usize] as f32
                             * brightness_level;
-                        let green = self.assets.textures["/images/tile41.ff"].data
+                        let green = ceiling_texture.data
                             [source_index as usize + 1] as f32
                             * brightness_level;
-                        let blue = self.assets.textures["/images/tile41.ff"].data
+                        let blue = ceiling_texture.data
                             [source_index as usize + 2] as f32
                             * brightness_level;
-                        let alpha = self.assets.textures["/images/tile41.ff"].data
+                        let alpha = ceiling_texture.data
                             [source_index as usize + 3];
 
                         // Draw the pixel
@@ -1449,13 +1644,26 @@ impl GameWindow {
                             (bottom_of_wall - top_of_wall) + 1.0,
                             x_image_column,
                             self.base_light_value as f32 / obj.real_distance,
-                            obj.texture.to_string(),
+                            obj.texture_id,
                         );
                     }
                     // now lets draw the next column
                     x_image_column += increment;
                 }
             }
+        }
+    }
+
+    pub fn move_doors_demo(&mut self) {
+        if self.door_opening {
+            self.door_positions[0] += 1;
+        } else {
+            self.door_positions[0] -= 1;
+        }
+        if self.door_positions[0] == self.tile_size as u8 {
+            self.door_opening = false;
+        } else if self.door_positions[0] == 0x0 {
+            self.door_opening = true;
         }
     }
 
@@ -1529,15 +1737,9 @@ impl GameWindow {
         //from the current or the next cell and back the player to the previous position
         if dx > 0.5 {
             // moving right
-            if self
-                .f_map
-                .chars()
-                .nth(
-                    ((player_ycell as i32 * self.map_width as i32) + player_xcell as i32 + 1)
-                        as usize,
-                )
-                .unwrap()
-                != 'O'
+            if self.f_map[player_ycell as usize][(player_xcell as i32 + 1) as usize]
+                & 0xf
+                != 0
                 && (new_player_xcell_offset < (min_distance_to_wall)
                     || new_player_xcell_offset > (self.tile_size - min_distance_to_wall))
             {
@@ -1546,15 +1748,10 @@ impl GameWindow {
             }
         } else if dx < 0.5 {
             // moving left
-            if self
-                .f_map
-                .chars()
-                .nth(
-                    ((player_ycell as i32 * self.map_width as i32) + player_xcell as i32 - 1)
-                        as usize,
-                )
-                .unwrap()
-                != 'O'
+            if self.f_map
+                [player_ycell as usize][(player_xcell as i32 - 1) as usize]
+                & 0xf
+                != 0
                 && (new_player_xcell_offset < (min_distance_to_wall)
                     || new_player_xcell_offset > (self.tile_size - min_distance_to_wall))
             {
@@ -1565,15 +1762,9 @@ impl GameWindow {
 
         if dy < -0.5 {
             // moving up
-            if self
-                .f_map
-                .chars()
-                .nth(
-                    (((player_ycell as i32 - 1) * self.map_width as i32) + player_xcell as i32)
-                        as usize,
-                )
-                .unwrap()
-                != 'O'
+            if self.f_map[(player_ycell as i32 - 1) as usize][player_xcell as i32 as usize]
+                & 0xf
+                != 0
                 && (new_player_ycell_offset > (self.tile_size as f32 - min_distance_to_wall)
                     || new_player_ycell_offset < (min_distance_to_wall))
             {
@@ -1582,15 +1773,9 @@ impl GameWindow {
             }
         } else if dy > 0.5 {
             // moving down
-            if self
-                .f_map
-                .chars()
-                .nth(
-                    (((player_ycell as i32 + 1) * self.map_width as i32) + player_xcell as i32)
-                        as usize,
-                )
-                .unwrap()
-                != 'O'
+            if self.f_map[(player_ycell as i32 + 1) as usize][player_xcell as usize]
+                & 0xf
+                != 0
                 && (new_player_ycell_offset > (self.tile_size - min_distance_to_wall)
                     || new_player_ycell_offset < (min_distance_to_wall))
             {
@@ -1602,15 +1787,10 @@ impl GameWindow {
         let new_player_xcell = (new_player_x / self.tile_size).floor();
         let new_player_ycell = (new_player_y / self.tile_size).floor();
 
-        if self
-            .f_map
-            .chars()
-            .nth(
-                ((new_player_ycell as i32 * self.map_width as i32) + new_player_xcell as i32)
-                    as usize,
-            )
-            .unwrap()
-            != 'O'
+        if self.f_map
+            [new_player_ycell as usize][new_player_xcell as usize]
+            & 0xf
+            != 0
         {
             //the new cell is not allowed
             if new_player_xcell != player_xcell && (dx >= 0.5 || dx <= -0.5) {

@@ -4,10 +4,10 @@ onmessage = function(e) {
   fetch(file_path)
   .then(resp => resp.blob())
   .then(workerResult => {
-    console.log('Worker: Working on file' + file_path);
-    filename_ascii = new Blob([file_path + '|'], {type: 'text/plain'});
+    console.log('Worker: Working on file ' + file_path);
+    filename_ascii = new Blob([file_path + '\0'], {type: 'text/plain'});
     new_blob = new Blob([filename_ascii, workerResult], {type: 'application/octet-stream'});
-    return new_blob;    
+    return new_blob;
   })
   .then(complete_blob => complete_blob.arrayBuffer())
   .then(array_buffer => {

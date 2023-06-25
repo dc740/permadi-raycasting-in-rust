@@ -1,11 +1,9 @@
 #[cfg(not(feature = "web"))]
-use crate::generic_loader_impl::load_raw_bin;
+use crate::generic_loader_impl::{load_raw_bin, load_farbfeld};
 #[cfg(feature = "web")]
 use crate::web_setup::loader::download_raw_bin;
-#[cfg(not(feature = "web"))]
-use farfarbfeld::Decoder;
-#[cfg(not(feature = "web"))]
-use std::{error::Error, io::Cursor};
+
+use serde::{Serialize, Deserialize};
 
 use std::collections::HashMap;
 #[cfg(feature = "web")]
@@ -20,64 +18,94 @@ pub struct Texture {
 
 pub struct Assets {
     pub root: String,
-    pub textures: HashMap<String, Texture>,
+    pub resources: Option<ResourceIndex>,
+    pub textures: HashMap<u32, Texture>,
+    pub loader: Box<dyn FileLoader>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ResourceIndex {
+    pub images: Vec<ResourceImage>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ResourceImage {
+    pub id: u32,
+    pub name: String,
+    pub path: String,
+}
+
+pub trait FileLoader {
+    /**
+     * Loads all textures detailed in the index file
+     */
+    fn load_textures(&mut self, resource_index: &ResourceIndex, textures: &mut HashMap<u32, Texture>);
+    /**
+     * Downloads the index file that contains the list of
+     * textures to download
+     */
+    fn load_index_file(&mut self) -> Option<ResourceIndex>;
+}
+
+#[cfg(not(feature = "web"))]
+pub struct LocalFileLoader {
+}
+
+#[cfg(not(feature = "web"))]
+impl FileLoader for LocalFileLoader {
+    fn load_textures(&mut self, resource_index: &ResourceIndex, textures: &mut HashMap<u32, Texture>){
+        for img in &resource_index.images {
+            let raw_bin = load_raw_bin(&img.path); //TODO: improve fix to path so it finds the files and works with web
+            let texture = load_farbfeld(&raw_bin.unwrap()); //this unwrap throws erros if the file doesn't exist
+
+            let f = match texture {
+                Ok(texture) => texture,
+                Err(error) => panic!("Problem opening the file: {:?}", error),
+            };
+            textures.insert(img.id, f);
+        }
+    }
+    fn load_index_file(&mut self) -> Option<ResourceIndex>{
+        let raw_bin = load_raw_bin(&("/resources.json".to_owned())).unwrap();
+        let resources_str = std::str::from_utf8(&raw_bin).unwrap();
+        Some(serde_json::from_str(&resources_str).unwrap())
+    }
+}
+
+#[cfg(feature = "web")]
+pub struct WebFileLoader {
+    pub worker : Rc<RefCell<web_sys::Worker>>,
+}
+
+#[cfg(feature = "web")]
+impl FileLoader for WebFileLoader {
+    fn load_textures(&mut self, resource_index: &ResourceIndex, _textures: &mut HashMap<u32, Texture>){
+        for img in &resource_index.images {
+            download_raw_bin(self.worker.clone(), &img.path);
+            // TODO: move farbled loading and texture inserts here.
+            // It is currently setup in the web module, with the worker
+            // callback.
+            // load_farbfeld(...)
+            //textures.insert(img.path[1..].to_string(), f);
+        }
+    }
+    fn load_index_file(&mut self) -> Option<ResourceIndex> {
+        download_raw_bin(self.worker.clone(), &("/resources.json".to_owned()));
+        None
+    }
 }
 
 impl Assets {
-    #[cfg(not(feature = "web"))]
-    fn load_texture(&mut self, filename: &str) {
-        let texture = self.load_farbfeld(filename);
-        let f = match texture {
-            Ok(texture) => texture,
-            Err(error) => panic!("Problem opening the file: {:?}", error),
-        };
-        self.textures.insert(filename.to_string(), f);
-    }
-    /**
-     * This is a sample function that loads a couple of textures
-     *
-     * on the web it simply sends the names to the worker
-     * and we process the results in the worker callback.
-     */
-    #[cfg(not(feature = "web"))]
-    pub fn load_some_textures(&mut self) {
-        self.load_texture("/images/tile2.ff");
-        self.load_texture("/images/green.ff");
-        self.load_texture("/images/floortile.ff");
-        self.load_texture("/images/tile41.ff");
-        self.load_texture("/images/bgr.ff");
-        self.load_texture("/images/brick2.ff");
-        self.load_texture("/images/arma_32.ff");
-    }
-    #[cfg(feature = "web")]
-    pub fn load_some_textures(&mut self, worker: Rc<RefCell<web_sys::Worker>>) {
-        download_raw_bin(worker.clone(), "/images/tile2.ff");
-        download_raw_bin(worker.clone(), "/images/green.ff");
-        download_raw_bin(worker.clone(), "/images/floortile.ff");
-        download_raw_bin(worker.clone(), "/images/tile41.ff");
-        download_raw_bin(worker.clone(), "/images/bgr.ff");
-        download_raw_bin(worker.clone(), "/images/brick2.ff");
-        download_raw_bin(worker.clone(), "/images/arma_32.ff");
+    pub fn init(&mut self){
+        self.resources = self.loader.load_index_file();
     }
 
-    #[cfg(not(feature = "web"))]
-    fn load_farbfeld(&self, path: &str) -> Result<Texture, Box<dyn Error>> {
-        let raw_bin = load_raw_bin(&(".".to_owned() + path)); //fix path so it finds the files
-        let buf = Cursor::new(raw_bin.unwrap()); //this unwrap throws erros if the file doesn't exist
-        let mut img = Decoder::new(buf).unwrap(); //this one if the file is invalid
-        let (w, h) = img.dimensions();
-        let data = img
-            .read_image()
-            .unwrap()
-            .chunks_exact(2)
-            .into_iter()
-            .map(|a| a[1]) //we could do .map(|a| u16::from_ne_bytes([a[0], a[1]])) here
-            // but we only care about the first 8 bits
-            .collect();
-        Ok(Texture {
-            width: w,
-            height: h,
-            data,
-        })
+
+    pub fn load(&mut self){
+        if let Some(resources) = &self.resources {
+            self.loader.load_textures(&resources, &mut self.textures)
+        } else {
+            panic!("Resources file not loaded");
+        }
     }
 }
