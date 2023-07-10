@@ -90,6 +90,28 @@ pub fn u8_to_color(alpha: u8, red: u8, green: u8, blue: u8) -> u32 {
     }
 }
 
+#[cfg(feature = "web")]
+macro_rules! argb_to_buffer {
+    // This macro stores argb values in the ABGR buffer
+    ($a:expr, $r:expr, $g:expr, $b:expr, $buffer:expr, $index:expr) => {
+        $buffer[$index] = $r;
+        $buffer[$index + 1] = $g;
+        $buffer[$index + 2] = $b;
+        $buffer[$index + 3] = $a;
+    };
+}
+
+#[cfg(not(feature = "web"))]
+macro_rules! argb_to_buffer {
+    // This macro stores argb values in the 0rgb buffer
+    ($a:expr, $r:expr, $g:expr, $b:expr, $buffer:expr, $index:expr) => {
+        $buffer[$index] = $b;
+        $buffer[$index + 1] = $g;
+        $buffer[$index + 2] = $r;
+        $buffer[$index + 3] = $a;
+    };
+}
+
 #[inline]
 pub fn clamp_u32_to_u8(value: u32) -> u8 {
     let mut x = value;
@@ -149,7 +171,7 @@ pub struct GameWindow {
     //framerate: u32,
     buffer_n: usize,
     area_size: usize,
-    canvas: Vec<u32>,
+    canvas: Vec<u8>,
     pub assets: Assets,
     // size of tile (wall height)
     tile_size: f32,
@@ -255,8 +277,9 @@ pub struct GameWindow {
 
 impl GameWindow {
     pub fn new(width: usize, height: usize, assets: Assets) -> Self {
-        let buffer_len: usize = (width * height) * 4 * 2;
-        let canvas: Vec<u32> = vec![0; buffer_len];
+        let buffer_len: usize = (width * height) * 4 * 2; // twice the buffer because I was doing
+                                                          // double buffer at some point
+        let canvas: Vec<u8> = vec![0; buffer_len];
         let projectionplanewidth = 320.0;
         let projectionplaneheight = 200.0;
         let angle180 = std::f32::consts::PI;
@@ -417,7 +440,7 @@ impl GameWindow {
             f_map: [[0; 20]; 20],
             map_width: 20.0,
             map_height: 20.0,
-            map_background_img:110,
+            map_background_img: 110,
             map_wall_img: [[0; 20]; 20],
             map_floor_img: [[0; 20]; 20],
             map_ceiling_img: [[0; 20]; 20],
@@ -436,8 +459,8 @@ impl GameWindow {
     }
 
     #[inline]
-    pub fn map_index(&mut self, x: i32, y:i32) -> u32 {
-        (y*self.tile_size as i32 + x) as u32
+    pub fn map_index(&mut self, x: i32, y: i32) -> u32 {
+        (y * self.tile_size as i32 + x) as u32
     }
 
     //*******************************************************************//
@@ -454,7 +477,7 @@ impl GameWindow {
         blue: u8,
         alpha: u8,
     ) {
-        let default_increment: i32 = 1; // we access the canvas 4 bytes at a time
+        let default_increment: i32 = 4; // we access the canvas 4 bytes at a time
         let x_increment: i32;
         let y_increment: i32;
 
@@ -502,8 +525,7 @@ impl GameWindow {
                     break;
                 }
                 if target_index < canvas_len {
-                    //ARGB
-                    self.canvas[target_index as usize] = u8_to_color(alpha, red, green, blue);
+                    argb_to_buffer!(alpha, red, green, blue, self.canvas, target_index as usize);
                 }
 
                 // either move left/right
@@ -534,8 +556,7 @@ impl GameWindow {
                 }
 
                 if target_index < canvas_len {
-                    //ARGB
-                    self.canvas[target_index as usize] = u8_to_color(alpha, red, green, blue);
+                    argb_to_buffer!(alpha, red, green, blue, self.canvas, target_index as usize);
                 }
                 target_index = target_index + y_increment as i32;
                 error += dx;
@@ -572,6 +593,7 @@ impl GameWindow {
         let y = y_param.floor();
         let x_offset = x_offset_param.floor();
         let bytes_per_pixel: u32 = 4;
+        let default_increment = 4;
 
         let mut source_index = bytes_per_pixel * x_offset as u32;
 
@@ -580,7 +602,8 @@ impl GameWindow {
                 - bytes_per_pixel;
 
         //let targetCanvasPixels=self.canvasContext.createImageData(0, 0, width, height);
-        let mut target_index: i32 = ((self.width * 1) as f32 * y + (1 as f32 * x)) as i32;
+        let mut target_index: i32 =
+            ((self.width * default_increment) as f32 * y + (default_increment as f32 * x)) as i32;
         let canvas_len: usize = self.canvas.len();
         let mut height_to_draw: f32 = height;
         // clip bottom
@@ -618,24 +641,26 @@ impl GameWindow {
             // Cheap shading trick by using brightnessLevel (which doesn't really have to correspond to "brightness")
             // to alter colors.  You can use logarithmic falloff or linear falloff to produce some interesting effect
             let f_wall_texture_pixels = &f_wall_texture_buffer.data;
-            let alpha = f_wall_texture_pixels[source_index as usize + 3]; //.floor();
-            
+
             let red = f_wall_texture_pixels[source_index as usize] as f32 * brightness_level; //.floor();
             let green = f_wall_texture_pixels[source_index as usize + 1] as f32 * brightness_level; //.floor();
             let blue = f_wall_texture_pixels[source_index as usize + 2] as f32 * brightness_level; //.floor();
+            let alpha = f_wall_texture_pixels[source_index as usize + 3]; //.floor();
 
             // while there's a row to draw & not end of drawing area
             while y_error >= f_wall_texture_buffer.width as f32 && !y_error.is_nan() {
                 y_error -= f_wall_texture_buffer.width as f32;
                 if alpha != 0 && target_index > 0 && (target_index as usize) < canvas_len {
-                    self.canvas[target_index as usize] = u8_to_color(
+                    argb_to_buffer!(
                         alpha,
                         red.floor() as u8,
                         green.floor() as u8,
                         blue.floor() as u8,
-                    ); //0xFF005500;/**/
+                        self.canvas,
+                        target_index as usize
+                    );
                 }
-                target_index += (1 * self.width) as i32;
+                target_index += (default_increment * self.width) as i32;
 
                 // clip bottom (just return if we reach bottom)
                 height_to_draw -= 1.0;
@@ -643,7 +668,7 @@ impl GameWindow {
                     return;
                 }
             }
-            
+
             source_index += bytes_per_pixel * f_wall_texture_buffer.width;
             if source_index > last_source_index {
                 source_index = last_source_index;
@@ -669,15 +694,14 @@ impl GameWindow {
         alpha: u8,
     ) {
         let canvas_len: usize = self.canvas.len();
-        let default_increment = 1;
+        let default_increment = 4;
         //let targetCanvasPixels=self.canvasContext.createImageData(0, 0, width, height);
         let mut target_index: i32 =
             (default_increment * self.width * y + default_increment * x) as i32;
         for _h in 0..height {
             for _w in 0..width {
-                //ARGB
                 if (target_index as usize) < canvas_len {
-                    self.canvas[target_index as usize] = u8_to_color(alpha, red, green, blue);
+                    argb_to_buffer!(alpha, red, green, blue, self.canvas, target_index as usize);
                 }
                 target_index += default_increment as i32;
             }
@@ -764,30 +788,7 @@ impl GameWindow {
         }
 
         // CREATE A SIMPLE MAP.
-        /*
-        // Use string for elegance (easier to see).  W=Wall, O=Opening
 
-        let map3 = "WWWWWWWWWWWWWWWWWWWW\
-                WOOOOOOOOOOOOOOOOOOW\
-                WOOWOWOWOOOWOOWWOWOW\
-                WOOOOOOOWOOWOOOOWWOW\
-                WOOWOWOOWOOWOOWWWWOW\
-                WOOWOWWOWOOWOOWOOWOW\
-                WOOWOOWOWOOWOOWOOWOW\
-                WOOOWOWOWOOWOOOOOWOW\
-                WOOOWOWOWOOWOOWOOWOW\
-                WOOOWWWOWOOWOOWWWWOW\
-                WOOOOOOOOOOOOOOOOOOW\
-                WOOWOWOWOOOWOOWWOWOW\
-                WOOOOOOOWOOWOOOOOWOW\
-                WOOWOWOWOOOWOOWWOWOW\
-                WOOOOOOOWOOWOOOOOWOW\
-                WOOWOWOWOOOWOOWWOWOW\
-                WOOOOOOOWOOOOOOOOWOW\
-                WOOWOWOWOOOWOOWWOWOW\
-                WOOOOOOOOOOWOOOOOOOW\
-                WWWWWWWWWWWWWWWWWWWW";
-        self.f_map = map3.to_string();*/
         /*
          * POC map definition:
          * ---unused 16bits --- generic index 8 bits --- tile type 8 bits---
@@ -810,9 +811,13 @@ impl GameWindow {
             [1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1],
             [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
             [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0x0002, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
+            [
+                1, 0, 0, 0, 0x0002, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1,
+            ],
             [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0x0102, 0, 1, 0, 0, 0, 0, 1],
+            [
+                1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0x0102, 0, 1, 0, 0, 0, 0, 1,
+            ],
             [1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1],
             [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
             [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -820,77 +825,219 @@ impl GameWindow {
             [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
             [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
             [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         ];
         self.map_width = 20.0;
         self.map_height = 20.0;
         self.map_background_img = 110;
         // stores walls and doors textures
         self.map_wall_img = [
-            [83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83],
+            [
+                83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83,
+            ],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
-            [83, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83, 0, 0, 0, 83],
+            [
+                83, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83, 0, 0, 0, 83,
+            ],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
-            [83, 0, 0, 0, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 0, 0, 0, 0, 83],
-            [83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83],
-            [83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83],
-            [83, 0, 0, 0, 74, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83],
-            [83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83],
-            [83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 74, 0, 83, 0, 0, 0, 0, 83],
-            [83, 0, 0, 0, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 0, 0, 0, 0, 83],
+            [
+                83, 0, 0, 0, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 0, 0, 0, 0, 83,
+            ],
+            [
+                83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83,
+            ],
+            [
+                83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83,
+            ],
+            [
+                83, 0, 0, 0, 74, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83,
+            ],
+            [
+                83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 83, 0, 83, 0, 0, 0, 0, 83,
+            ],
+            [
+                83, 0, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 74, 0, 83, 0, 0, 0, 0, 83,
+            ],
+            [
+                83, 0, 0, 0, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 0, 0, 0, 0, 83,
+            ],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
-            [83, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83, 0, 0, 0, 83],
+            [
+                83, 0, 0, 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83, 0, 0, 0, 83,
+            ],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
             [83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 83],
-            [83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83]
+            [
+                83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83,
+            ],
         ];
         self.map_floor_img = [
-            [162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 14, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162],
-            [162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162]
-       ];
-       self.map_ceiling_img = [
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101],
-            [101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101]
+            [
+                162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162, 162,
+            ],
+            [
+                162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162, 162,
+            ],
+            [
+                162, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 14, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162,
+            ],
+            [
+                162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162, 162,
+            ],
+            [
+                162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162, 162,
+            ],
+        ];
+        self.map_ceiling_img = [
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
+            [
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 101, 101, 101,
+            ],
         ];
     }
 
@@ -901,7 +1048,7 @@ impl GameWindow {
         for r in 0..self.map_height as u32 {
             for c in 0..self.map_width as u32 {
                 if self.f_map[r as usize][c as usize] & 0xf != 0 {
-                    if  self.f_map[r as usize][c as usize] & 0x2 == 0x2 {
+                    if self.f_map[r as usize][c as usize] & 0x2 == 0x2 {
                         //this is a door
                         self.draw_fill_rectangle(
                             c * self.f_minimap_width as u32, //self.projectionplanewidth + (c * self.f_minimap_width),
@@ -913,7 +1060,6 @@ impl GameWindow {
                             50,
                             255,
                         );
-
                     } else {
                         // a regular wall
                         self.draw_fill_rectangle(
@@ -941,16 +1087,16 @@ impl GameWindow {
     //* Draw background image
     //*******************************************************************//
     fn draw_background(&mut self) {
-        //this implementation resizes the image as needed
+        let proj_plane_width: usize = self.projectionplanewidth as usize;
         let bytes_per_pixel = 4;
-        let pp_width_in_bytes = self.projectionplanewidth as usize * bytes_per_pixel;
+        let pp_width_in_bytes = proj_plane_width * bytes_per_pixel;
         let src_width_in_bytes =
             self.assets.textures[&self.map_background_img].width as usize * bytes_per_pixel;
 
         let start_column = self.f_player_arc as usize;
         let mut src_start = start_column * bytes_per_pixel;
         let mut src_end = src_start + pp_width_in_bytes; //we only need to copy the row until the end of the proj plane
-        let mut cnv_index;
+        let mut cnv_index = 0;
         let extra_columns;
         if src_end > src_width_in_bytes {
             extra_columns = src_end - src_width_in_bytes;
@@ -958,25 +1104,16 @@ impl GameWindow {
         } else {
             extra_columns = 0;
         }
-
-        for y_position in 0..self.projectionplaneheight as i32 {
-            cnv_index = self.projectionplanewidth as usize * y_position as usize;
-            for x_position in (src_start..src_end).step_by(bytes_per_pixel) {
-                self.canvas[cnv_index] = ((self.assets.textures[&self.map_background_img].data[x_position +3 ] as u32) << 24) | //r
-                (self.assets.textures[&self.map_background_img].data[x_position + 2] as u32) << 16 | //g
-                (self.assets.textures[&self.map_background_img].data[x_position + 1] as u32) << 8 |  //b
-                (self.assets.textures[&self.map_background_img].data[x_position] as u32); //a
+        let texture = &self.assets.textures[&self.map_background_img].data;
+        for y_position in 0..self.projectionplaneheight as usize {
+            for x_position in src_start..src_end {
+                self.canvas[cnv_index] = texture[x_position];
                 cnv_index += 1; //move 1 place to the right in X
             }
             if extra_columns != 0 {
-                let extra_start = src_width_in_bytes * y_position as usize;
-                for x_position in
-                    (extra_start..extra_start + extra_columns).step_by(bytes_per_pixel)
-                {
-                    self.canvas[cnv_index] = ((self.assets.textures[&self.map_background_img].data[x_position +3 ] as u32) << 24) | //r
-                    (self.assets.textures[&self.map_background_img].data[x_position + 2] as u32) << 16 | //g
-                    (self.assets.textures[&self.map_background_img].data[x_position + 1] as u32) << 8 |  //b
-                    (self.assets.textures[&self.map_background_img].data[x_position] as u32); //a
+                let extra_start = src_width_in_bytes * y_position;
+                for x_position in extra_start..extra_start + extra_columns {
+                    self.canvas[cnv_index] = texture[x_position];
                     cnv_index += 1; //move 1 place to the right in X
                 }
             }
@@ -1073,6 +1210,8 @@ impl GameWindow {
         let mut dist_to_horizontal_grid_being_hit: f32; // the viewpoint
 
         let mut cast_arc: i32;
+
+        let default_increment = 4;
         //let debug = false;
 
         // field of view is 60 degree with the point of view (player's direction in the middle)
@@ -1163,13 +1302,14 @@ impl GameWindow {
                         dist_to_horizontal_grid_being_hit = f32::MAX;
                         break;
                     }
-                    
+
                     // If the grid is not an Opening, then stop
                     if self.f_map[y_grid_index as usize][x_grid_index as usize] & 0xf != 0 {
                         if self.f_map[y_grid_index as usize][x_grid_index as usize] & 0x2 == 0x2 {
                             //its a door
                             let door_index =
-                                ((self.f_map[y_grid_index as usize][x_grid_index as usize] >> 8) & 0xff) as usize;
+                                ((self.f_map[y_grid_index as usize][x_grid_index as usize] >> 8)
+                                    & 0xff) as usize;
                             // check if open, if the ray goes through and act accordingly
                             let hit_x_on_tile = x_intersection % self.tile_size;
                             if hit_x_on_tile + dist_to_next_xintersection / 2.0
@@ -1242,7 +1382,8 @@ impl GameWindow {
                         if self.f_map[y_grid_index as usize][x_grid_index as usize] & 0x2 == 0x2 {
                             //its a door
                             let door_index =
-                                ((self.f_map[y_grid_index as usize][x_grid_index as usize] >> 8) & 0xff) as usize;
+                                ((self.f_map[y_grid_index as usize][x_grid_index as usize] >> 8)
+                                    & 0xff) as usize;
                             // check if open, if the ray goes through and act accordingly
                             //
                             let hit_y_on_tile = y_intersection % self.tile_size;
@@ -1334,7 +1475,7 @@ impl GameWindow {
 
             // get the texture:
             // x_grid_index y_grid_index
-            let wall_texture :u32 = self.map_wall_img[y_grid_index as usize][x_grid_index as usize];
+            let wall_texture: u32 = self.map_wall_img[y_grid_index as usize][x_grid_index as usize];
 
             // Trick to give different shades between vertical and horizontal (you could also use different textures for each if you wish to)
             if is_vertical_hit {
@@ -1369,8 +1510,9 @@ impl GameWindow {
             // *************
             // find the first bit so we can just add the width to get the
             // next row (of the same column)
-            let mut target_index: i32 =
-                last_bottom_of_wall as i32 * (self.width * 1) as i32 + (1 * cast_column) as i32;
+            let mut target_index: i32 = last_bottom_of_wall as i32
+                * (self.width * default_increment) as i32
+                + (default_increment * cast_column) as i32;
             for row in last_bottom_of_wall as i32..self.projectionplaneheight as i32 {
                 let straight_distance = self.f_player_height as f32
                     / (row as f32 - projection_plane_center_y as f32)
@@ -1401,45 +1543,40 @@ impl GameWindow {
                 {
                     if target_index > 0 {
                         // Find texture
-                        let floor_texture_idx :u32 = self.map_floor_img[cell_y as usize][cell_x as usize];
+                        let floor_texture_idx: u32 =
+                            self.map_floor_img[cell_y as usize][cell_x as usize];
                         let floor_texture = &self.assets.textures[&floor_texture_idx];
                         // Find offset of tile and column in texture
                         let tile_row = (y_end as f32 % self.tile_size as f32).floor() as i32;
                         let tile_column = (x_end as f32 % self.tile_size as f32).floor() as i32;
                         // Pixel to draw
-                        let source_index = (tile_row as u32
-                            * floor_texture.width
-                            * bytes_per_pixel)
-                            + (bytes_per_pixel * tile_column as u32);
+                        let source_index =
+                            (tile_row as u32 * floor_texture.width * bytes_per_pixel)
+                                + (bytes_per_pixel * tile_column as u32);
 
                         // Cheap shading trick
                         let brightness_level = 150.0 / actual_distance;
-                        let red = floor_texture.data
-                            [source_index as usize]
-                            as f32
-                            * brightness_level;
-                        let green = floor_texture.data
-                            [source_index as usize + 1]
-                            as f32
-                            * brightness_level;
-                        let blue = floor_texture.data
-                            [source_index as usize + 2]
-                            as f32
-                            * brightness_level;
-                        let alpha = floor_texture.data
-                            [source_index as usize + 3];
+                        let red =
+                            floor_texture.data[source_index as usize] as f32 * brightness_level;
+                        let green =
+                            floor_texture.data[source_index as usize + 1] as f32 * brightness_level;
+                        let blue =
+                            floor_texture.data[source_index as usize + 2] as f32 * brightness_level;
+                        let alpha = floor_texture.data[source_index as usize + 3];
 
                         // Draw the pixel
-                        self.canvas[target_index as usize] = u8_to_color(
+                        argb_to_buffer!(
                             alpha,
-                            red.floor() as u8,
-                            green.floor() as u8,
-                            blue.floor() as u8,
+                            red as u8,
+                            green as u8,
+                            blue as u8,
+                            self.canvas,
+                            target_index as usize
                         );
                     }
 
                     // Go to the next pixel (directly under the current pixel)
-                    target_index += (1 * self.width) as i32;
+                    target_index += (default_increment * self.width) as i32;
                 }
             }
             // *************
@@ -1449,8 +1586,9 @@ impl GameWindow {
                 // find the first bit so we can just add the width to get the
                 // next row (of the same column)
 
-                let mut target_index: i32 =
-                    last_top_of_wall as i32 * (self.width * 1) as i32 + (1 * cast_column) as i32;
+                let mut target_index: i32 = last_top_of_wall as i32
+                    * (self.width * default_increment) as i32
+                    + (default_increment * cast_column) as i32;
                 for row in (0..=last_top_of_wall as i32).rev() {
                     let ratio: f32 = (self.wall_height - self.f_player_height)
                         / (projection_plane_center_y - row as f32);
@@ -1481,42 +1619,40 @@ impl GameWindow {
                         && cell_y >= 0
                     {
                         // Find the texture
-                        let ceiling_texture_idx :u32 = self.map_ceiling_img[cell_y as usize][cell_x as usize];
+                        let ceiling_texture_idx: u32 =
+                            self.map_ceiling_img[cell_y as usize][cell_x as usize];
                         let ceiling_texture = &self.assets.textures[&ceiling_texture_idx];
                         // Find offset of tile and column in texture
                         let tile_row: i32 = (y_end as f32 % self.tile_size as f32).floor() as i32;
                         let tile_column: i32 =
                             (x_end as f32 % self.tile_size as f32).floor() as i32;
                         // Pixel to draw
-                        let source_index = (tile_row as u32
-                            * ceiling_texture.width
-                            * bytes_per_pixel)
-                            + (bytes_per_pixel * tile_column as u32);
+                        let source_index =
+                            (tile_row as u32 * ceiling_texture.width * bytes_per_pixel)
+                                + (bytes_per_pixel * tile_column as u32);
                         //println!("sourceIndex="+sourceIndex);
                         // Cheap shading trick
                         let brightness_level = 100.0 / diagonal_distance;
-                        let red = ceiling_texture.data
-                            [source_index as usize] as f32
+                        let red =
+                            ceiling_texture.data[source_index as usize] as f32 * brightness_level;
+                        let green = ceiling_texture.data[source_index as usize + 1] as f32
                             * brightness_level;
-                        let green = ceiling_texture.data
-                            [source_index as usize + 1] as f32
+                        let blue = ceiling_texture.data[source_index as usize + 2] as f32
                             * brightness_level;
-                        let blue = ceiling_texture.data
-                            [source_index as usize + 2] as f32
-                            * brightness_level;
-                        let alpha = ceiling_texture.data
-                            [source_index as usize + 3];
+                        let alpha = ceiling_texture.data[source_index as usize + 3];
 
                         // Draw the pixel
-                        self.canvas[target_index as usize] = u8_to_color(
+                        argb_to_buffer!(
                             alpha,
-                            red.floor() as u8,
-                            green.floor() as u8,
-                            blue.floor() as u8,
+                            red as u8,
+                            green as u8,
+                            blue as u8,
+                            self.canvas,
+                            target_index as usize
                         );
 
                         // Go to the next pixel (directly above the current pixel)
-                        target_index -= (1 * self.width) as i32;
+                        target_index -= (default_increment * self.width) as i32;
                     }
                 }
             }
@@ -1737,9 +1873,7 @@ impl GameWindow {
         //from the current or the next cell and back the player to the previous position
         if dx > 0.5 {
             // moving right
-            if self.f_map[player_ycell as usize][(player_xcell as i32 + 1) as usize]
-                & 0xf
-                != 0
+            if self.f_map[player_ycell as usize][(player_xcell as i32 + 1) as usize] & 0xf != 0
                 && (new_player_xcell_offset < (min_distance_to_wall)
                     || new_player_xcell_offset > (self.tile_size - min_distance_to_wall))
             {
@@ -1748,10 +1882,7 @@ impl GameWindow {
             }
         } else if dx < 0.5 {
             // moving left
-            if self.f_map
-                [player_ycell as usize][(player_xcell as i32 - 1) as usize]
-                & 0xf
-                != 0
+            if self.f_map[player_ycell as usize][(player_xcell as i32 - 1) as usize] & 0xf != 0
                 && (new_player_xcell_offset < (min_distance_to_wall)
                     || new_player_xcell_offset > (self.tile_size - min_distance_to_wall))
             {
@@ -1762,8 +1893,7 @@ impl GameWindow {
 
         if dy < -0.5 {
             // moving up
-            if self.f_map[(player_ycell as i32 - 1) as usize][player_xcell as i32 as usize]
-                & 0xf
+            if self.f_map[(player_ycell as i32 - 1) as usize][player_xcell as i32 as usize] & 0xf
                 != 0
                 && (new_player_ycell_offset > (self.tile_size as f32 - min_distance_to_wall)
                     || new_player_ycell_offset < (min_distance_to_wall))
@@ -1773,9 +1903,7 @@ impl GameWindow {
             }
         } else if dy > 0.5 {
             // moving down
-            if self.f_map[(player_ycell as i32 + 1) as usize][player_xcell as usize]
-                & 0xf
-                != 0
+            if self.f_map[(player_ycell as i32 + 1) as usize][player_xcell as usize] & 0xf != 0
                 && (new_player_ycell_offset > (self.tile_size - min_distance_to_wall)
                     || new_player_ycell_offset < (min_distance_to_wall))
             {
@@ -1787,11 +1915,7 @@ impl GameWindow {
         let new_player_xcell = (new_player_x / self.tile_size).floor();
         let new_player_ycell = (new_player_y / self.tile_size).floor();
 
-        if self.f_map
-            [new_player_ycell as usize][new_player_xcell as usize]
-            & 0xf
-            != 0
-        {
+        if self.f_map[new_player_ycell as usize][new_player_xcell as usize] & 0xf != 0 {
             //the new cell is not allowed
             if new_player_xcell != player_xcell && (dx >= 0.5 || dx <= -0.5) {
                 //moving left or right caused us to move to an invalid cell
@@ -1877,8 +2001,13 @@ impl GameWindow {
      * return a slice in the buffer that has just been updated
      */
     pub fn get_buffer_to_print(&mut self) -> &[u32] {
-        let start_offset = self.buffer_n * self.area_size as usize;
-        &self.canvas[start_offset..start_offset + self.area_size as usize]
+        let default_increment = 4;
+        let start_offset = self.buffer_n * self.area_size as usize * default_increment;
+        unsafe {
+            &self.canvas[start_offset..(start_offset + self.area_size * default_increment) as usize]
+                .align_to::<u32>()
+                .1
+        }
     }
 
     pub fn game_step(&mut self, window: &Window) {
