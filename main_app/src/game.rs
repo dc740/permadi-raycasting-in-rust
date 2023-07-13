@@ -1096,7 +1096,6 @@ impl GameWindow {
         let start_column = self.f_player_arc as usize;
         let mut src_start = start_column * bytes_per_pixel;
         let mut src_end = src_start + pp_width_in_bytes; //we only need to copy the row until the end of the proj plane
-        let mut cnv_index = 0;
         let extra_columns;
         if src_end > src_width_in_bytes {
             extra_columns = src_end - src_width_in_bytes;
@@ -1104,22 +1103,26 @@ impl GameWindow {
         } else {
             extra_columns = 0;
         }
+        let columns_to_copy = src_end - src_start;
         let texture = &self.assets.textures[&self.map_background_img].data;
+        let mut dest_start = 0;
+        let mut dest_end = columns_to_copy;
         for y_position in 0..self.projectionplaneheight as usize {
-            for x_position in src_start..src_end {
-                self.canvas[cnv_index] = texture[x_position];
-                cnv_index += 1; //move 1 place to the right in X
-            }
+            self.canvas[dest_start..dest_end].copy_from_slice(&texture[src_start..src_end]);
+            dest_start = dest_end;
+
             if extra_columns != 0 {
                 let extra_start = src_width_in_bytes * y_position;
-                for x_position in extra_start..extra_start + extra_columns {
-                    self.canvas[cnv_index] = texture[x_position];
-                    cnv_index += 1; //move 1 place to the right in X
-                }
-            }
+                let extra_end = extra_start + extra_columns;
 
+                dest_end = dest_start + extra_columns;
+                self.canvas[dest_start..dest_end].copy_from_slice(&texture[extra_start..extra_end]);
+                dest_start = dest_end;
+            }
+            dest_end = dest_start + columns_to_copy;
             src_start += src_width_in_bytes;
             src_end += src_width_in_bytes;
+
         }
     }
 
