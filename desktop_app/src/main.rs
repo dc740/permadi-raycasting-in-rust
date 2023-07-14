@@ -1,12 +1,12 @@
-use minifb::{Key, Scale, ScaleMode, Window, WindowOptions};
-use std::time::Instant;
-use std::collections::HashMap;
 use main_app::loader::{Assets, LocalFileLoader};
+use minifb::{Key, Scale, ScaleMode, Window, WindowOptions};
+use std::collections::HashMap;
+use std::time::Instant;
 const WIDTH: usize = 320;
 const HEIGHT: usize = 200;
 
 fn main() {
-    let loader = LocalFileLoader{};
+    let loader = LocalFileLoader {};
     let assets = Assets {
         root: "./".to_string(),
         textures: HashMap::new(),
@@ -29,10 +29,11 @@ fn main() {
     });
 
     // Limit to max ~60 fps update rate
-    //window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
+    window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
     raycast.init();
     raycast.assets.init();
     raycast.assets.load();
+    raycast.correct_background_colors(); //some workaround to speed up drawing the background
     let mut average_execution_time: u128 = 0;
     let mut fps_counter_reset: u128 = 0;
     let samples = 20;
@@ -42,9 +43,8 @@ fn main() {
         average_execution_time += start.elapsed().as_micros();
         if fps_counter_reset % samples == 0 {
             println!(
-                "Frame time {} ms | {} FPS",
-                average_execution_time / 1000 / samples,
-                1000000 / (average_execution_time / samples)
+                "Frame time {} ms",
+                average_execution_time / 1000 / samples
             );
             average_execution_time = 0;
         }

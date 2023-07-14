@@ -1086,6 +1086,33 @@ impl GameWindow {
     //*******************************************************************//
     //* Draw background image
     //*******************************************************************//
+
+    // This is a workaround to fix colors on desktop so we can copy them faster later
+    // Its only for the background because we don't multiply each value to simulate
+    // darker things at the distance, we just dump the image as-is into the background
+    #[cfg(not(feature = "web"))]
+    pub fn correct_background_colors(&mut self) {
+        let mut texture = self
+            .assets
+            .textures
+            .remove(&self.map_background_img)
+            .unwrap();
+        texture.data.chunks_mut(4).for_each(|chunk| {
+            let r = chunk[0];
+            let g = chunk[1];
+            let b = chunk[2];
+            let a = chunk[3];
+
+            chunk[0] = b;
+            chunk[1] = g;
+            chunk[2] = r;
+            chunk[3] = a;
+        });
+        self.assets
+            .textures
+            .insert(self.map_background_img, texture);
+    }
+
     fn draw_background(&mut self) {
         let proj_plane_width: usize = self.projectionplanewidth as usize;
         let bytes_per_pixel = 4;
@@ -1122,7 +1149,6 @@ impl GameWindow {
             dest_end = dest_start + columns_to_copy;
             src_start += src_width_in_bytes;
             src_end += src_width_in_bytes;
-
         }
     }
 
