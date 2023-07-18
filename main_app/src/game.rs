@@ -253,8 +253,6 @@ pub struct GameWindow {
     f_key_look_down: bool,
     f_key_fly_up: bool,
     f_key_fly_down: bool,
-    f_key_ceiling_toggle: bool,
-    no_ceiling: bool,
 
     // 2 dimensional map
     f_map: [[u32; 20]; 20],
@@ -433,8 +431,6 @@ impl GameWindow {
             f_key_look_down: false,
             f_key_fly_up: false,
             f_key_fly_down: false,
-            f_key_ceiling_toggle: false,
-            no_ceiling: false,
 
             // 2 dimensional map
             f_map: [[0; 20]; 20],
@@ -676,9 +672,6 @@ impl GameWindow {
         }
     }
 
-    fn clear_offscreen_canvas(&self) {
-        // no need to do anything because the screen will be redrwan fully anyway
-    }
     //*******************************************************************//
     //* Mostly used to draw in the overhead map. Doesn't have other uses now.
     //*******************************************************************//
@@ -941,15 +934,15 @@ impl GameWindow {
                 162, 162, 162,
             ],
             [
-                162, 162, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 14, 162, 162, 181, 181, 181, 162, 162, 162, 162, 162, 162, 162, 162, 162,
                 162, 162, 162,
             ],
             [
-                162, 162, 14, 14, 14, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 14, 14, 14, 181, 181, 181, 162, 162, 162, 162, 162, 162, 162, 162, 162,
                 162, 162, 162,
             ],
             [
-                162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162, 162,
+                162, 162, 162, 162, 162, 181, 181, 181, 162, 162, 162, 162, 162, 162, 162, 162,
                 162, 162, 162, 162,
             ],
             [
@@ -975,8 +968,8 @@ impl GameWindow {
                 101, 101, 101, 101,
             ],
             [
-                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
-                101, 101, 101, 101,
+                101, 101, 101, 181, 181, 181, 181, 181, 181, 181, 181, 181, 181, 181, 181, 181,
+                181, 101, 101, 101,
             ],
             [
                 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
@@ -1583,25 +1576,24 @@ impl GameWindow {
                             (tile_row as u32 * floor_texture.width * bytes_per_pixel)
                                 + (bytes_per_pixel * tile_column as u32);
 
-                        // Cheap shading trick
-                        let brightness_level = 150.0 / actual_distance;
-                        let red =
-                            floor_texture.data[source_index as usize] as f32 * brightness_level;
-                        let green =
-                            floor_texture.data[source_index as usize + 1] as f32 * brightness_level;
-                        let blue =
-                            floor_texture.data[source_index as usize + 2] as f32 * brightness_level;
                         let alpha = floor_texture.data[source_index as usize + 3];
+                        if alpha != 0 {
+                            // Cheap shading trick
+                            let brightness_level = 100.0 / actual_distance;
+                            let red = floor_texture.data[source_index as usize] as f32;
+                            let green = floor_texture.data[source_index as usize + 1] as f32;
+                            let blue = floor_texture.data[source_index as usize + 2] as f32;
 
-                        // Draw the pixel
-                        argb_to_buffer!(
-                            alpha,
-                            red as u8,
-                            green as u8,
-                            blue as u8,
-                            self.canvas,
-                            target_index as usize
-                        );
+                            // Draw the pixel
+                            argb_to_buffer!(
+                                alpha,
+                                (red * brightness_level) as u8,
+                                (green * brightness_level) as u8,
+                                (blue * brightness_level) as u8,
+                                self.canvas,
+                                target_index as usize
+                            );
+                        }
                     }
 
                     // Go to the next pixel (directly under the current pixel)
@@ -1611,78 +1603,73 @@ impl GameWindow {
             // *************
             // CEILING CASTING at the simplest!  Try to find ways to optimize this, you can do it!
             // *************
-            if !self.no_ceiling {
-                // find the first bit so we can just add the width to get the
-                // next row (of the same column)
+            // find the first bit so we can just add the width to get the
+            // next row (of the same column)
 
-                let mut target_index: i32 = last_top_of_wall as i32
-                    * (self.width * default_increment) as i32
-                    + (default_increment * cast_column) as i32;
-                for row in (0..=last_top_of_wall as i32).rev() {
-                    let ratio: f32 = (self.wall_height - self.f_player_height)
-                        / (projection_plane_center_y - row as f32);
+            let mut target_index: i32 = last_top_of_wall as i32
+                * (self.width * default_increment) as i32
+                + (default_increment * cast_column) as i32;
+            for row in (0..=last_top_of_wall as i32).rev() {
+                let ratio: f32 = (self.wall_height - self.f_player_height)
+                    / (projection_plane_center_y - row as f32);
 
-                    let diagonal_distance = (self.f_player_distance_to_the_projection_plane
-                        * ratio
-                        * self.f_fish_table[cast_column as usize])
-                        .floor();
+                let diagonal_distance = (self.f_player_distance_to_the_projection_plane
+                    * ratio
+                    * self.f_fish_table[cast_column as usize])
+                    .floor();
 
-                    let mut y_end: i32 =
-                        (diagonal_distance * self.f_sin_table[cast_arc as usize]).floor() as i32;
-                    let mut x_end: i32 =
-                        (diagonal_distance * self.f_cos_table[cast_arc as usize]).floor() as i32;
+                let mut y_end: i32 =
+                    (diagonal_distance * self.f_sin_table[cast_arc as usize]).floor() as i32;
+                let mut x_end: i32 =
+                    (diagonal_distance * self.f_cos_table[cast_arc as usize]).floor() as i32;
 
-                    // Translate relative to viewer coordinates:
-                    x_end = x_end.wrapping_add(self.f_player_x as i32);
-                    y_end = y_end.wrapping_add(self.f_player_y as i32);
+                // Translate relative to viewer coordinates:
+                x_end = x_end.wrapping_add(self.f_player_x as i32);
+                y_end = y_end.wrapping_add(self.f_player_y as i32);
 
-                    // Get the tile intersected by ray:
-                    let cell_x: i32 = (x_end as f32 / self.tile_size as f32).floor() as i32;
-                    let cell_y: i32 = (y_end as f32 / self.tile_size as f32).floor() as i32;
-                    //println!("cell_x="+cell_x+" cell_y="+cell_y);
+                // Get the tile intersected by ray:
+                let cell_x: i32 = (x_end as f32 / self.tile_size as f32).floor() as i32;
+                let cell_y: i32 = (y_end as f32 / self.tile_size as f32).floor() as i32;
+                //println!("cell_x="+cell_x+" cell_y="+cell_y);
 
-                    //Make sure the tile is within our map
-                    if cell_x < self.map_width as i32
-                        && cell_y < self.map_height as i32
-                        && cell_x >= 0
-                        && cell_y >= 0
-                    {
-                        // Find the texture
-                        let ceiling_texture_idx: u32 =
-                            self.map_ceiling_img[cell_y as usize][cell_x as usize];
-                        let ceiling_texture = &self.assets.textures[&ceiling_texture_idx];
-                        // Find offset of tile and column in texture
-                        let tile_row: i32 = (y_end as f32 % self.tile_size as f32).floor() as i32;
-                        let tile_column: i32 =
-                            (x_end as f32 % self.tile_size as f32).floor() as i32;
-                        // Pixel to draw
-                        let source_index =
-                            (tile_row as u32 * ceiling_texture.width * bytes_per_pixel)
-                                + (bytes_per_pixel * tile_column as u32);
-                        //println!("sourceIndex="+sourceIndex);
+                //Make sure the tile is within our map
+                if cell_x < self.map_width as i32
+                    && cell_y < self.map_height as i32
+                    && cell_x >= 0
+                    && cell_y >= 0
+                {
+                    // Find the texture
+                    let ceiling_texture_idx: u32 =
+                        self.map_ceiling_img[cell_y as usize][cell_x as usize];
+                    let ceiling_texture = &self.assets.textures[&ceiling_texture_idx];
+                    // Find offset of tile and column in texture
+                    let tile_row: i32 = (y_end as f32 % self.tile_size as f32).floor() as i32;
+                    let tile_column: i32 = (x_end as f32 % self.tile_size as f32).floor() as i32;
+                    // Pixel to draw
+                    let source_index = (tile_row as u32 * ceiling_texture.width * bytes_per_pixel)
+                        + (bytes_per_pixel * tile_column as u32);
+
+                    let alpha = ceiling_texture.data[source_index as usize + 3];
+                    if alpha != 0 {
                         // Cheap shading trick
                         let brightness_level = 100.0 / diagonal_distance;
-                        let red =
-                            ceiling_texture.data[source_index as usize] as f32 * brightness_level;
-                        let green = ceiling_texture.data[source_index as usize + 1] as f32
-                            * brightness_level;
-                        let blue = ceiling_texture.data[source_index as usize + 2] as f32
-                            * brightness_level;
-                        let alpha = ceiling_texture.data[source_index as usize + 3];
+                        let red = ceiling_texture.data[source_index as usize] as f32;
+                        let green = ceiling_texture.data[source_index as usize + 1] as f32;
+                        let blue = ceiling_texture.data[source_index as usize + 2] as f32;
 
                         // Draw the pixel
                         argb_to_buffer!(
                             alpha,
-                            red as u8,
-                            green as u8,
-                            blue as u8,
+                            (red * brightness_level) as u8,
+                            (green * brightness_level) as u8,
+                            (blue * brightness_level) as u8,
                             self.canvas,
                             target_index as usize
                         );
-
-                        // Go to the next pixel (directly above the current pixel)
-                        target_index -= (default_increment * self.width) as i32;
                     }
+
+                    // Go to the next pixel (directly above the current pixel)
+                    target_index -= (default_increment * self.width) as i32;
                 }
             }
 
@@ -1834,11 +1821,7 @@ impl GameWindow {
 
     // This function is called every certain interval (see self.frameRate) to handle input and render the screen
     fn update(&mut self) {
-        self.clear_offscreen_canvas();
-
-        if self.no_ceiling {
-            self.draw_background();
-        }
+        self.draw_background();
         self.raycast();
         self.draw_objects();
         self.draw_overhead_map();
@@ -1983,10 +1966,6 @@ impl GameWindow {
         } else if self.f_player_height > self.wall_height - 5.0 {
             self.f_player_height = self.wall_height - 5.0;
         }
-
-        if self.f_key_ceiling_toggle {
-            self.no_ceiling = !self.no_ceiling;
-        }
     }
 
     fn handle_keys(&mut self, window: &Window) {
@@ -2013,9 +1992,6 @@ impl GameWindow {
 
         // FLY DOWN
         self.f_key_fly_down = window.is_key_down(Key::C);
-
-        // CEILING
-        self.f_key_ceiling_toggle = window.is_key_down(Key::F); //we should ideally have some
     }
 
     /*    fn flip_buffer_in_use(&mut self) {

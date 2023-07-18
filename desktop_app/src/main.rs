@@ -42,10 +42,7 @@ fn main() {
         raycast.game_step(&window);
         average_execution_time += start.elapsed().as_micros();
         if fps_counter_reset % samples == 0 {
-            println!(
-                "Frame time {} ms",
-                average_execution_time / 1000 / samples
-            );
+            println!("Frame time {} ms", average_execution_time / 1000 / samples);
             average_execution_time = 0;
         }
         // open and close the doors

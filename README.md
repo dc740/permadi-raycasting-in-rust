@@ -21,6 +21,4 @@ webassembly magic, but it works.
 The sprites support is not documented in the original tutorial, but the code is not
 optimized, so it should be (hopefully) easier to follow.
 
-Press F to hide the ceiling.
-
 I'm keeping the original license too.
